@@ -21,3 +21,8 @@ venv/
 .idea/
 Thumbs.db
 .DS_Store
+
+info/
+figures/
+example_result.zip
+summer_school_project_train.zip

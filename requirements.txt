@@ -1,0 +1,15 @@
+# Install a CUDA-compatible PyTorch build separately for your GPU first.
+# Do not use this file to replace an existing working PyTorch/CUDA installation.
+
+# Training and data pipeline
+albumentations==2.0.8
+opencv-python-headless
+numpy
+scipy
+pillow
+matplotlib
+tqdm
+
+# SegFormer-B1
+transformers
+einops
