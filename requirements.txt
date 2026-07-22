@@ -12,4 +12,3 @@ tqdm
 
 # SegFormer-B1
 transformers
-einops

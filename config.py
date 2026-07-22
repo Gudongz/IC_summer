@@ -17,20 +17,37 @@ def _project_path(value: str) -> Path:
 
 
 def load_settings() -> SimpleNamespace:
-    """Load JSON settings and expose them as attributes."""
+    """Load settings, select the active model profile, and resolve paths."""
     with SETTINGS_PATH.open(encoding="utf-8") as file:
-        values = json.load(file)
+        raw = json.load(file)
 
-    for key in ("task1_input", "task1_gt", "task1_train_input", "task1_train_gt", "task1_val_input", "task1_val_gt", "task2_gt", "task1_output_folder", "task2_output_folder", "inference_ground_truth", "checkpoint_folder", "training_plot_path"):
-        if values.get(key) is not None:
-            values[key] = _project_path(values[key])
-    model_name = values["model_name"]
-    values["batch_size"] = values.get("model_batch_sizes", {}).get(model_name, values["batch_size"])
-    values["learning_rate"] = values.get("model_learning_rates", {}).get(model_name, values["learning_rate"])
-    values["checkpoint_folder"] = values["checkpoint_folder"] / model_name
-    values["best_checkpoint_path"] = values["checkpoint_folder"] / "best.pt"
-    values["training_plot_path"] = values["training_plot_path"] / model_name / "curves.png"
-    values["task1_output_folder"] = values["task1_output_folder"] / model_name
+    model_name = raw["model_name"]
+    try:
+        profile = raw["models"][model_name]
+    except KeyError as exc:
+        available = ", ".join(raw.get("models", {}))
+        raise ValueError(f"Unknown model_name {model_name!r}. Available models: {available}") from exc
+
+    values = {
+        **raw["data"],
+        **raw["output"],
+        **raw["training"],
+        **raw["inference"],
+        "model_name": model_name,
+        "batch_size": profile["batch_size"],
+        "learning_rate": profile["learning_rate"],
+        "pretrained": profile.get("pretrained", False),
+    }
+    for key in (
+        "task1_input", "task1_gt", "task1_train_input", "task1_train_gt",
+        "task1_val_input", "task1_val_gt", "checkpoint_root", "training_root",
+        "prediction_root",
+    ):
+        values[key] = _project_path(values[key])
+    values["checkpoint_dir"] = values.pop("checkpoint_root") / model_name
+    values["best_checkpoint_path"] = values["checkpoint_dir"] / "best.pt"
+    values["training_plot_path"] = values.pop("training_root") / model_name / "curves.png"
+    values["task1_output_folder"] = values.pop("prediction_root") / model_name
     return SimpleNamespace(**values)
 
 

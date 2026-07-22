@@ -26,7 +26,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> nn.Module:
     # The state dict supplies pretrained weights; retain the corresponding
     # ImageNet input normalization without downloading the encoder again.
     if hasattr(model, "normalize_input"):
-        model.normalize_input = bool(checkpoint.get("pretrained_encoder", False))
+        model.normalize_input = bool(checkpoint.get("pretrained", checkpoint.get("pretrained_encoder", False)))
     model.load_state_dict(checkpoint["model_state_dict"])
     return model.to(device).eval()
 
@@ -110,7 +110,7 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=settings.task1_input, help="Folder of source RGB images.")
     parser.add_argument("--output", type=Path, default=settings.task1_output_folder, help="Folder for predicted PNG masks.")
     parser.add_argument("--checkpoint", type=Path, default=settings.best_checkpoint_path)
-    parser.add_argument("--ground-truth", type=Path, default=settings.inference_ground_truth, help="Optional Task 1 GT-mask folder, used only for visual comparisons.")
+    parser.add_argument("--ground-truth", type=Path, default=settings.task1_gt, help="Optional Task 1 GT-mask folder, used only for visual comparisons.")
     parser.add_argument("--save-comparisons", action=argparse.BooleanOptionalAction, default=settings.save_comparisons, help="Save a 2x2 original/GT/prediction comparison image per sample; requires --ground-truth.")
     args = parser.parse_args()
 

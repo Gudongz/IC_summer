@@ -26,7 +26,7 @@ Verify the environment:
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 ```
 
-`SegFormer-B1` downloads its ImageNet MiT-B1 weights on the first training run when `pretrained_encoder` is `true` in `settings.json`.
+`SegFormer-B1` downloads its ImageNet MiT-B1 weights on the first training run when `models.segformer_b1.pretrained` is `true` in `settings.json`.
 
 ## Data layout
 
@@ -86,7 +86,7 @@ Available values are `unet`, `lb_unet`, `segformer_b1`, and `uctransnet`.
 python train_task1.py
 ```
 
-Model-specific batch sizes and learning rates are configured in `model_batch_sizes` and `model_learning_rates`. Training uses automatic mixed precision on CUDA.
+Each model's batch size, learning rate, and optional pretrained setting live under the `models` section in `settings.json`. Training uses automatic mixed precision on CUDA.
 
 Outputs are kept separate by model:
 

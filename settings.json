@@ -1,43 +1,52 @@
 {
-  "task1_input": "data/train/images",
-  "task1_gt": "data/train/task1_gt",
-  "task2_gt": "data/train/task2_gt",
-  "task1_output_folder": "outputs/task1/predictions",
-  "task2_output_folder": "outputs/task2/predictions",
-  "inference_ground_truth": "data/train/task1_gt",
-  "save_comparisons": true,
-  "inference_batch_size": 64,
-  "checkpoint_folder": "checkpoints",
-  "training_plot_path": "outputs/task1/training",
   "model_name": "unet",
-  "pretrained_encoder": true,
-  "image_size": 256,
-  "batch_size": 32,
-  "model_batch_sizes": {
-    "unet": 32,
-    "lb_unet": 32,
-    "segformer_b1": 16,
-    "uctransnet": 16
+  "models": {
+    "unet": {
+      "batch_size": 32,
+      "learning_rate": 0.001
+    },
+    "lb_unet": {
+      "batch_size": 32,
+      "learning_rate": 0.001
+    },
+    "segformer_b1": {
+      "batch_size": 16,
+      "learning_rate": 0.0001,
+      "pretrained": true
+    },
+    "uctransnet": {
+      "batch_size": 16,
+      "learning_rate": 0.0003
+    }
   },
-  "epochs": 15,
-  "learning_rate": 0.001,
-  "model_learning_rates": {
-    "unet": 0.001,
-    "lb_unet": 0.001,
-    "segformer_b1": 0.0001,
-    "uctransnet": 0.0003
+  "data": {
+    "task1_input": "data/train/images",
+    "task1_gt": "data/train/task1_gt",
+    "task1_train_input": "data/prepared/task1/train/images",
+    "task1_train_gt": "data/prepared/task1/train/task1_gt",
+    "task1_val_input": "data/prepared/task1/val/images",
+    "task1_val_gt": "data/prepared/task1/val/task1_gt"
   },
-  "weight_decay": 0.00001,
-  "random_seed": 42,
-  "num_workers": 8,
-  "device": "cuda",
-  "prediction_threshold": 0.5,
-  "lb_region_loss_weight": 0.25,
-  "lb_boundary_loss_weight": 0.25,
-  "task1_train_input": "data/prepared/task1/train/images",
-  "task1_train_gt": "data/prepared/task1/train/task1_gt",
-  "task1_val_input": "data/prepared/task1/val/images",
-  "task1_val_gt": "data/prepared/task1/val/task1_gt",
-  "use_postprocessing": false,
-  "postprocess_gaussian_sigma": 5.0
+  "output": {
+    "checkpoint_root": "checkpoints",
+    "training_root": "outputs/task1/training",
+    "prediction_root": "outputs/task1/predictions",
+    "save_comparisons": true
+  },
+  "training": {
+    "image_size": 256,
+    "epochs": 15,
+    "weight_decay": 0.00001,
+    "random_seed": 42,
+    "num_workers": 8,
+    "device": "cuda",
+    "prediction_threshold": 0.5,
+    "lb_region_loss_weight": 0.25,
+    "lb_boundary_loss_weight": 0.25
+  },
+  "inference": {
+    "batch_size": 64,
+    "use_postprocessing": false,
+    "postprocess_gaussian_sigma": 5.0
+  }
 }

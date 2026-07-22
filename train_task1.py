@@ -23,7 +23,7 @@ from task1_metrics import hausdorff_distances
 
 
 def build_model() -> nn.Module:
-    return build_task1_model(settings.model_name, pretrained=settings.pretrained_encoder)
+    return build_task1_model(settings.model_name, pretrained=settings.pretrained)
 
 
 def dice_loss(logits: Tensor, target: Tensor, eps: float = 1e-6) -> Tensor:
@@ -227,7 +227,7 @@ def main() -> None:
     model = build_model().to(device)
     optimizer = AdamW(model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
-    settings.checkpoint_folder.mkdir(parents=True, exist_ok=True)
+    settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     start_epoch, best_dice, history = restore_checkpoint(model, optimizer)
     end_epoch = start_epoch + settings.epochs - 1
 
@@ -245,7 +245,7 @@ def main() -> None:
         print(f"Epoch {epoch:03d}/{end_epoch}: train BCE={train_metrics['bce']:.4f}, loss={train_metrics['total_loss']:.4f}, Dice={train_metrics['dice']:.4f}; val BCE={val_metrics['bce']:.4f}, loss={val_metrics['total_loss']:.4f}, Dice={val_metrics['dice']:.4f}, HD={val_metrics['hd']:.2f}px, HD95={val_metrics['hd95']:.2f}px")
         if val_metrics["dice"] > best_dice:
             best_dice = val_metrics["dice"]
-            torch.save({"model_name": settings.model_name, "pretrained_encoder": settings.pretrained_encoder, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "epoch": epoch, "validation_dice": val_metrics["dice"], "validation_bce": val_metrics["bce"], "validation_total_loss": val_metrics["total_loss"], "validation_hd": val_metrics["hd"], "validation_hd95": val_metrics["hd95"], "history": history}, settings.best_checkpoint_path)
+            torch.save({"model_name": settings.model_name, "pretrained": settings.pretrained, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "epoch": epoch, "validation_dice": val_metrics["dice"], "validation_bce": val_metrics["bce"], "validation_total_loss": val_metrics["total_loss"], "validation_hd": val_metrics["hd"], "validation_hd95": val_metrics["hd95"], "history": history}, settings.best_checkpoint_path)
             print(f"  Saved best checkpoint to {settings.best_checkpoint_path}")
 
 

@@ -21,8 +21,7 @@ def build_task1_model(model_name: str, pretrained: bool = False) -> nn.Module:
     if model_name == "uctransnet":
         return UCTransNet(in_channels=3, out_channels=1)
     raise ValueError(
-        f"Unsupported Task 1 model {model_name!r}. Choose one of {SUPPORTED_TASK1_MODELS}. "
-        "The retired 'resnet_unet' has been replaced by 'lb_unet'."
+        f"Unsupported Task 1 model {model_name!r}. Choose one of {SUPPORTED_TASK1_MODELS}."
     )
 
 

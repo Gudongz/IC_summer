@@ -1,14 +1,14 @@
-# 数据与固定增强数据
+# Data and generated splits
 data/
 summer_school_project_train/
 splits/
 
-# 训练产物
+# Training artifacts
 checkpoints/
 outputs/
 rendered_report/
 
-# Python / 环境
+# Python and local environments
 __pycache__/
 *.py[cod]
 .venv/
@@ -16,13 +16,16 @@ venv/
 .env
 .ipynb_checkpoints/
 
-# 系统与编辑器
+# Editor and operating-system files
 .vscode/
 .idea/
 Thumbs.db
 .DS_Store
 
+# Local reference material and archives
 info/
 figures/
 example_result.zip
 summer_school_project_train.zip
+Project_Briefing.pdf
+
