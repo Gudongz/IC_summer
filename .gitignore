@@ -1,0 +1,23 @@
+# 数据与固定增强数据
+data/
+summer_school_project_train/
+splits/
+
+# 训练产物
+checkpoints/
+outputs/
+rendered_report/
+
+# Python / 环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.ipynb_checkpoints/
+
+# 系统与编辑器
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
