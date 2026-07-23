@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import random
+import subprocess
+import sys
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 # This import loads OpenCV before PyTorch; see task1_data.py for why.
 from task1_data import LesionSegmentationDataset, build_pairs
@@ -131,33 +131,27 @@ def run_epoch(
 
 
 def save_training_plot(history: dict[str, list[float]]) -> None:
-    """Write all requested training and validation metrics into one PNG figure."""
-    epochs = history["epoch"]
-    figure, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
+    """Persist metrics and render curves in a process without PyTorch loaded.
 
-    axes[0, 0].plot(epochs, history["train_total_loss"], label="Train")
-    axes[0, 0].plot(epochs, history["val_total_loss"], label="Validation")
-    axes[0, 0].set(title="Total loss (BCE + Dice loss)", xlabel="Epoch", ylabel="Loss")
-    axes[0, 0].legend()
-
-    axes[0, 1].plot(epochs, history["train_bce"], label="Train BCE")
-    axes[0, 1].plot(epochs, history["val_bce"], label="Validation BCE")
-    axes[0, 1].set(title="Binary cross-entropy", xlabel="Epoch", ylabel="BCE loss")
-    axes[0, 1].legend()
-
-    axes[1, 0].plot(epochs, history["train_dice"], label="Train Dice")
-    axes[1, 0].plot(epochs, history["val_dice"], label="Validation Dice")
-    axes[1, 0].set(title="Dice coefficient", xlabel="Epoch", ylabel="Dice", ylim=(0, 1))
-    axes[1, 0].legend()
-
-    axes[1, 1].plot(epochs, history["val_hd"], label="Validation HD")
-    axes[1, 1].plot(epochs, history["val_hd95"], label="Validation HD95")
-    axes[1, 1].set(title="Boundary distances", xlabel="Epoch", ylabel="Pixels")
-    axes[1, 1].legend()
-
+    On Windows, importing Matplotlib beside CUDA PyTorch can load conflicting
+    OpenMP runtimes. The plotting helper deliberately imports no PyTorch.
+    """
     settings.training_plot_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(settings.training_plot_path, dpi=160)
-    plt.close(figure)
+    history_path = settings.training_plot_path.with_name("history.json")
+    with history_path.open("w", encoding="utf-8") as file:
+        json.dump(history, file, indent=2)
+
+    helper = Path(__file__).with_name("plot_task1_training.py")
+    result = subprocess.run(
+        [sys.executable, str(helper), "--history", str(history_path), "--output", str(settings.training_plot_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        print(f"  Warning: curve rendering failed (exit {result.returncode}); training will continue.")
+        if result.stderr:
+            print(result.stderr.strip())
 
 
 def empty_history() -> dict[str, list[float]]:
@@ -167,10 +161,10 @@ def empty_history() -> dict[str, list[float]]:
 
 def restore_checkpoint(model: nn.Module, optimizer: AdamW) -> tuple[int, float, dict[str, list[float]]]:
     """Restore the configured best checkpoint, if present, for automatic resume."""
-    if not settings.best_checkpoint_path.is_file():
+    if not settings.checkpoint_path.is_file():
         return 1, -1.0, empty_history()
 
-    checkpoint = torch.load(settings.best_checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(settings.checkpoint_path, map_location="cpu", weights_only=False)
     checkpoint_model = checkpoint.get("model_name")
     if checkpoint_model != settings.model_name:
         raise ValueError(
@@ -189,7 +183,7 @@ def restore_checkpoint(model: nn.Module, optimizer: AdamW) -> tuple[int, float, 
         print("Checkpoint has no compatible metric history; starting a new curve history.")
     next_epoch = int(checkpoint.get("epoch", 0)) + 1
     best_dice = float(checkpoint.get("validation_dice", -1.0))
-    print(f"Resumed checkpoint: {settings.best_checkpoint_path} (next epoch {next_epoch}, best Dice {best_dice:.4f})")
+    print(f"Resumed checkpoint: {settings.checkpoint_path} (next epoch {next_epoch}, best Dice {best_dice:.4f})")
     return next_epoch, best_dice, history
 
 
@@ -227,9 +221,12 @@ def main() -> None:
     model = build_model().to(device)
     optimizer = AdamW(model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
-    settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    settings.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     start_epoch, best_dice, history = restore_checkpoint(model, optimizer)
-    end_epoch = start_epoch + settings.epochs - 1
+    end_epoch = settings.epochs
+    if start_epoch > end_epoch:
+        print(f"Training is already complete through epoch {end_epoch}.")
+        return
 
     print(f"Training {settings.model_name} on {device} ({len(training_pairs)} train / {len(validation_pairs)} val samples), epochs {start_epoch}-{end_epoch}")
     for epoch in range(start_epoch, end_epoch + 1):
@@ -241,12 +238,14 @@ def main() -> None:
             history[f"val_{key}"].append(val_metrics[key])
         history["val_hd"].append(val_metrics["hd"])
         history["val_hd95"].append(val_metrics["hd95"])
-        save_training_plot(history)
         print(f"Epoch {epoch:03d}/{end_epoch}: train BCE={train_metrics['bce']:.4f}, loss={train_metrics['total_loss']:.4f}, Dice={train_metrics['dice']:.4f}; val BCE={val_metrics['bce']:.4f}, loss={val_metrics['total_loss']:.4f}, Dice={val_metrics['dice']:.4f}, HD={val_metrics['hd']:.2f}px, HD95={val_metrics['hd95']:.2f}px")
         if val_metrics["dice"] > best_dice:
             best_dice = val_metrics["dice"]
-            torch.save({"model_name": settings.model_name, "pretrained": settings.pretrained, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "epoch": epoch, "validation_dice": val_metrics["dice"], "validation_bce": val_metrics["bce"], "validation_total_loss": val_metrics["total_loss"], "validation_hd": val_metrics["hd"], "validation_hd95": val_metrics["hd95"], "history": history}, settings.best_checkpoint_path)
-            print(f"  Saved best checkpoint to {settings.best_checkpoint_path}")
+            print("  Saving best checkpoint...")
+            torch.save({"model_name": settings.model_name, "pretrained": settings.pretrained, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "epoch": epoch, "validation_dice": val_metrics["dice"], "validation_bce": val_metrics["bce"], "validation_total_loss": val_metrics["total_loss"], "validation_hd": val_metrics["hd"], "validation_hd95": val_metrics["hd95"], "history": history}, settings.checkpoint_path)
+            print(f"  Saved best checkpoint to {settings.checkpoint_path}")
+        print("  Saving training curves...")
+        save_training_plot(history)
 
 
 if __name__ == "__main__":

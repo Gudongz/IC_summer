@@ -86,9 +86,9 @@ Available values are `unet`, `lb_unet`, `segformer_b1`, and `uctransnet`.
 python train_task1.py
 ```
 
-Each model's batch size, learning rate, and optional pretrained setting live under the `models` section in `settings.json`. Training uses automatic mixed precision on CUDA.
+Each model's batch size, learning rate, checkpoint path, and optional pretrained setting live under the `models` section in `settings.json`. Training uses automatic mixed precision on CUDA.
 
-Outputs are kept separate by model:
+Each model's checkpoint path is explicit in `settings.json` (for example, `models.lb_unet.checkpoint_path`). The default paths are:
 
 ```text
 checkpoints/<model_name>/best.pt

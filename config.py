@@ -36,16 +36,15 @@ def load_settings() -> SimpleNamespace:
         "model_name": model_name,
         "batch_size": profile["batch_size"],
         "learning_rate": profile["learning_rate"],
+        "checkpoint_path": profile["checkpoint_path"],
         "pretrained": profile.get("pretrained", False),
     }
     for key in (
         "task1_input", "task1_gt", "task1_train_input", "task1_train_gt",
-        "task1_val_input", "task1_val_gt", "checkpoint_root", "training_root",
+        "task1_val_input", "task1_val_gt", "checkpoint_path", "training_root",
         "prediction_root",
     ):
         values[key] = _project_path(values[key])
-    values["checkpoint_dir"] = values.pop("checkpoint_root") / model_name
-    values["best_checkpoint_path"] = values["checkpoint_dir"] / "best.pt"
     values["training_plot_path"] = values.pop("training_root") / model_name / "curves.png"
     values["task1_output_folder"] = values.pop("prediction_root") / model_name
     return SimpleNamespace(**values)
