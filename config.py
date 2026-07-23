@@ -33,16 +33,26 @@ def load_settings() -> SimpleNamespace:
         **raw["output"],
         **raw["training"],
         **raw["inference"],
+        **raw["evaluation"],
         "model_name": model_name,
         "batch_size": profile["batch_size"],
         "learning_rate": profile["learning_rate"],
         "checkpoint_path": profile["checkpoint_path"],
         "pretrained": profile.get("pretrained", False),
+        "inference_batch_size": raw["inference"]["batch_size"],
+        "evaluation_batch_size": raw["evaluation"]["batch_size"],
+    }
+    values["model_profiles"] = {
+        name: {
+            **candidate,
+            "checkpoint_path": _project_path(candidate["checkpoint_path"]),
+        }
+        for name, candidate in raw["models"].items()
     }
     for key in (
         "task1_input", "task1_gt", "task1_train_input", "task1_train_gt",
         "task1_val_input", "task1_val_gt", "checkpoint_path", "training_root",
-        "prediction_root",
+        "prediction_root", "sample_input", "sample_ground_truth", "output_root",
     ):
         values[key] = _project_path(values[key])
     values["training_plot_path"] = values.pop("training_root") / model_name / "curves.png"

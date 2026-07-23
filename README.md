@@ -110,13 +110,19 @@ Optional explicit paths:
 python infer_task1.py --checkpoint checkpoints/uctransnet/best.pt --output outputs/task1/predictions/uctransnet
 ```
 
-Evaluate predicted masks against Task 1 ground truth:
+Compare every configured checkpoint on the prepared validation set:
 
 ```powershell
-python evaluate_task1.py --predictions outputs/task1/predictions/uctransnet --masks data/train/task1_gt
+python evaluate_task1.py
 ```
 
-The evaluator reports mean Dice, Hausdorff distance, and HD95.
+The evaluator writes `validation_model_comparison.csv` with hard Dice, confidence Dice (soft Dice from probabilities), HD, and HD95. It also runs every model on the folder in `evaluation.sample_input` and writes masks plus GT/prediction comparison images under `outputs/task1/evaluation/sample_predictions/<model_name>/`.
+
+To evaluate selected models or another sample folder:
+
+```powershell
+python evaluate_task1.py --models lb_unet segformer_b1 --sample-input path\to\sample_images --sample-ground-truth path\to\sample_masks
+```
 
 ## Useful preprocessing commands
 

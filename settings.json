@@ -1,5 +1,5 @@
 {
-  "model_name": "lb_unet",
+  "model_name": "uctransnet",
   "models": {
     "unet": {
       "batch_size": 32,
@@ -12,15 +12,15 @@
       "checkpoint_path": "checkpoints/lb_unet/task1_lb_unet.pt"
     },
     "segformer_b1": {
-      "batch_size": 16,
+      "batch_size": 64,
       "learning_rate": 0.0001,
-      "checkpoint_path": "checkpoints/segformer_b1/best.pt",
+      "checkpoint_path": "checkpoints/segformer_b1/task1_segformer_b1.pt",
       "pretrained": true
     },
     "uctransnet": {
-      "batch_size": 16,
+      "batch_size": 64,
       "learning_rate": 0.0003,
-      "checkpoint_path": "checkpoints/uctransnet/best.pt"
+      "checkpoint_path": "checkpoints/uctransnet/task1_uctransnet.pt"
     }
   },
   "data": {
@@ -48,8 +48,12 @@
     "lb_boundary_loss_weight": 0.25
   },
   "inference": {
-    "batch_size": 64,
-    "use_postprocessing": false,
-    "postprocess_gaussian_sigma": 5.0
+    "batch_size": 64
+  },
+  "evaluation": {
+    "batch_size": 16,
+    "sample_input": "data/prepared/task1/val/images",
+    "sample_ground_truth": "data/prepared/task1/val/task1_gt",
+    "output_root": "outputs/task1/evaluation"
   }
 }

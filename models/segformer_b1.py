@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -48,3 +50,83 @@ class SegFormerB1(nn.Module):
         decoded = [F.interpolate(proj(feature), size=target_size, mode="bilinear", align_corners=False) for proj, feature in zip(self.projections, features)]
         logits = self.head(self.fuse(torch.cat(decoded, dim=1)))
         return F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
+
+    def load_compatible_state_dict(self, state_dict: dict[str, Tensor]) -> None:
+        """Load checkpoints saved by the legacy Hugging Face SegFormer layout.
+
+        Transformers renamed MiT encoder modules between versions. The tensor
+        shapes did not change, so old project checkpoints only need key
+        translation rather than retraining.
+        """
+        expected_keys = self.state_dict().keys()
+        if any(key.startswith("encoder.encoder.") for key in expected_keys):
+            # Older transformers releases still use the exact checkpoint
+            # naming scheme, so translating it would be incorrect.
+            self.load_state_dict(state_dict)
+            return
+        if not any(key.startswith("encoder.encoder.") for key in state_dict):
+            self.load_state_dict(state_dict)
+            return
+
+        translated: dict[str, Tensor] = {}
+        for key, value in state_dict.items():
+            key = re.sub(
+                r"^encoder\.encoder\.patch_embeddings\.(\d+)\.",
+                r"encoder.stages.\1.patch_embeddings.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_1\.",
+                r"encoder.stages.\1.blocks.\2.layernorm_before.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_2\.",
+                r"encoder.stages.\1.blocks.\2.layernorm_after.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.(query|key|value)\.",
+                r"encoder.stages.\1.blocks.\2.attention.\3_proj.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.output\.dense\.",
+                r"encoder.stages.\1.blocks.\2.attention.o_proj.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.sr\.",
+                r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.sequence_reduction.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.layer_norm\.",
+                r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.layer_norm.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense1\.",
+                r"encoder.stages.\1.blocks.\2.mlp.fc1.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense2\.",
+                r"encoder.stages.\1.blocks.\2.mlp.fc2.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dwconv\.dwconv\.",
+                r"encoder.stages.\1.blocks.\2.mlp.dwconv.dwconv.",
+                key,
+            )
+            key = re.sub(
+                r"^encoder\.encoder\.layer_norm\.(\d+)\.",
+                r"encoder.stages.\1.layer_norm.",
+                key,
+            )
+            key = key.replace(".attention.query_proj.", ".attention.q_proj.")
+            key = key.replace(".attention.key_proj.", ".attention.k_proj.")
+            key = key.replace(".attention.value_proj.", ".attention.v_proj.")
+            translated[key] = value
+        self.load_state_dict(translated)
