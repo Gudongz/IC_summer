@@ -103,6 +103,17 @@ def dice_per_attribute(logits: Tensor, targets: Tensor, threshold: float) -> tup
     return intersection, denominator
 
 
+def precision_recall_counts(logits: Tensor, targets: Tensor, threshold: float) -> tuple[Tensor, Tensor, Tensor]:
+    """Return per-attribute true-positive, false-positive, and false-negative counts."""
+    prediction = torch.sigmoid(logits) >= threshold
+    target = targets.bool()
+    dimensions = (0, 2, 3)
+    true_positive = (prediction & target).sum(dim=dimensions)
+    false_positive = (prediction & ~target).sum(dim=dimensions)
+    false_negative = (~prediction & target).sum(dim=dimensions)
+    return true_positive, false_positive, false_negative
+
+
 def bce_per_attribute(logits: Tensor, targets: Tensor) -> Tensor:
     """Return one BCEWithLogits loss per attribute channel."""
     return nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none").mean(dim=(0, 2, 3))
@@ -135,6 +146,7 @@ class Task2Trainer(SegmentationTrainer):
             "roi_mask_dir": self.settings.train_roi_mask if self.settings.roi_enabled else None,
             "roi_margin_ratio": self.settings.roi_margin_ratio,
             "roi_minimum_box_side": self.settings.roi_minimum_box_side,
+            "full_canvas_size": self.settings.image_size,
         }
         train_samples = build_task2_samples(self.settings.train_input, self.settings.train_gt, self.settings.train_manifest, **roi_kwargs)
         val_samples = build_task2_samples(
@@ -143,6 +155,7 @@ class Task2Trainer(SegmentationTrainer):
             roi_mask_dir=self.settings.val_roi_mask if self.settings.roi_enabled else None,
             roi_margin_ratio=self.settings.roi_margin_ratio,
             roi_minimum_box_side=self.settings.roi_minimum_box_side,
+            full_canvas_size=self.settings.image_size,
         )
         train_dataset = Task2SegmentationDataset(train_samples, self.settings.image_size)
         val_dataset = Task2SegmentationDataset(val_samples, self.settings.image_size)
@@ -210,6 +223,9 @@ class Task2Trainer(SegmentationTrainer):
         losses_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
         intersection_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
         denominator_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
+        true_positive_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
+        false_positive_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
+        false_negative_sum = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.float64)
         total_loss = 0.0
         phase = "Train" if training else "Validation"
         progress = tqdm(loader, desc=f"Epoch {epoch:03d}/{self.settings.epochs} {phase}", unit="batch", leave=False)
@@ -235,24 +251,34 @@ class Task2Trainer(SegmentationTrainer):
                     metric_logits = restore_logits_to_canvas(logits, rois.to(self.device, non_blocking=True))
                     metric_targets = full_targets.to(self.device, non_blocking=True)
                 intersections, denominators = dice_per_attribute(metric_logits, metric_targets, self.settings.prediction_threshold)
+                true_positive, false_positive, false_negative = precision_recall_counts(
+                    metric_logits, metric_targets, self.settings.prediction_threshold
+                )
                 losses_sum += per_attribute_loss.detach().float().cpu().numpy()
                 intersection_sum += intersections.detach().cpu().numpy()
                 denominator_sum += denominators.detach().cpu().numpy()
+                true_positive_sum += true_positive.detach().cpu().numpy()
+                false_positive_sum += false_positive.detach().cpu().numpy()
+                false_negative_sum += false_negative.detach().cpu().numpy()
                 total_loss += loss.item()
                 dice_now = (2 * intersections + 1e-6) / (denominators + 1e-6)
                 progress.set_postfix(loss=f"{loss.item():.4f}", mean_dice=f"{dice_now.mean().item():.4f}")
         dice = (2 * intersection_sum + 1e-6) / (denominator_sum + 1e-6)
+        precision = (true_positive_sum + 1e-6) / (true_positive_sum + false_positive_sum + 1e-6)
+        recall = (true_positive_sum + 1e-6) / (true_positive_sum + false_negative_sum + 1e-6)
         metrics: dict[str, object] = {"total_loss": total_loss / len(loader), "mean_dice": float(dice.mean())}
         for index, attribute in enumerate(TASK2_ATTRIBUTES):
             metrics[f"loss_{attribute}"] = float(losses_sum[index] / len(loader))
             metrics[f"dice_{attribute}"] = float(dice[index])
+            metrics[f"precision_{attribute}"] = float(precision[index])
+            metrics[f"recall_{attribute}"] = float(recall[index])
             metrics[f"weight_{attribute}"] = float(self.dynamic_weights.weights[index])
         return metrics
 
     def empty_history(self) -> dict[str, list[float]]:
         history = {"epoch": [], "train_total_loss": [], "val_total_loss": [], "train_mean_dice": [], "val_mean_dice": []}
         for attribute in TASK2_ATTRIBUTES:
-            for prefix in ("train_loss", "val_loss", "train_dice", "val_dice", "weight"):
+            for prefix in ("train_loss", "val_loss", "train_dice", "val_dice", "train_precision", "val_precision", "train_recall", "val_recall", "weight"):
                 history[f"{prefix}_{attribute}"] = []
         return history
 
@@ -338,9 +364,17 @@ class Task2Trainer(SegmentationTrainer):
                 for attribute in TASK2_ATTRIBUTES:
                     history[f"{phase}_loss_{attribute}"].append(metrics[f"loss_{attribute}"])
                     history[f"{phase}_dice_{attribute}"].append(metrics[f"dice_{attribute}"])
+                    history[f"{phase}_precision_{attribute}"].append(metrics[f"precision_{attribute}"])
+                    history[f"{phase}_recall_{attribute}"].append(metrics[f"recall_{attribute}"])
             for attribute in TASK2_ATTRIBUTES:
                 history[f"weight_{attribute}"].append(train_metrics[f"weight_{attribute}"])
             print(f"Epoch {epoch:03d}: train loss={train_metrics['total_loss']:.4f}, Dice={train_metrics['mean_dice']:.4f}; val loss={val_metrics['total_loss']:.4f}, Dice={val_metrics['mean_dice']:.4f}")
+            for phase, metrics in (("Train", train_metrics), ("Val", val_metrics)):
+                summary = " | ".join(
+                    f"{attribute}: P={metrics[f'precision_{attribute}']:.4f}, R={metrics[f'recall_{attribute}']:.4f}"
+                    for attribute in TASK2_ATTRIBUTES
+                )
+                print(f"  {phase} precision/recall — {summary}")
             # Validation determines the weights to be used by the *next*
             # epoch; persist that state with any checkpoint saved this epoch.
             self.dynamic_weights.update(np.asarray([val_metrics[f"dice_{name}"] for name in TASK2_ATTRIBUTES]))

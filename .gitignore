@@ -5,6 +5,7 @@ splits/
 
 # Training artifacts
 checkpoints/
+checkpoints_256/
 outputs/
 rendered_report/
 

@@ -1,5 +1,5 @@
 {
-  "model_name": "lb_unet",
+  "model_name": "segformer_b1",
   "models": {
     "unet": {
       "batch_size": 32,
@@ -28,7 +28,7 @@
       "checkpoint_path": "checkpoints/lb_unet/task1_lb_unet.pt"
     },
     "segformer_b1": {
-      "batch_size": 128,
+      "batch_size": 32,
       "learning_rate": 0.0001,
       "encoder_learning_rate": 0.00003,
       "freeze_encoder_epochs": 10,
@@ -55,7 +55,7 @@
     "save_comparisons": true
   },
   "training": {
-    "image_size": 256,
+    "image_size": 512,
     "epochs": 100,
     "weight_decay": 0.00001,
     "random_seed": 42,
@@ -139,7 +139,7 @@
       "train_manifest": "splits/task2_train.csv"
     },
     "training": {
-      "image_size": 256,
+      "image_size": 512,
       "epochs": 100,
       "weight_decay": 0.00001,
       "random_seed": 42,

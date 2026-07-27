@@ -93,6 +93,7 @@ def build_task2_samples(
     roi_mask_dir: Path | None = None,
     roi_margin_ratio: float = 0.10,
     roi_minimum_box_side: int = 32,
+    full_canvas_size: int = 256,
 ) -> list[Task2Sample]:
     image_dir, mask_dir = Path(image_dir), Path(mask_dir)
     if not image_dir.is_dir() or not mask_dir.is_dir():
@@ -110,7 +111,7 @@ def build_task2_samples(
         if missing:
             raise FileNotFoundError(f"Task 2 masks missing for {image_path.name}: {', '.join(missing)}")
         if roi_mask_dir is None:
-            roi = full_canvas_roi(256, 256)
+            roi = full_canvas_roi(full_canvas_size, full_canvas_size)
         else:
             prior_path = roi_mask_dir / f"{image_path.stem}_segmentation.png"
             prior = cv2.imread(str(prior_path), cv2.IMREAD_GRAYSCALE)
