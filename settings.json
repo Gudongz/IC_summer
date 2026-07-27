@@ -88,9 +88,10 @@
     "output_root": "outputs/task1/evaluation"
   },
   "task2": {
-    "model_name": "task2_segformer_b1_multidecoder",
+    "model_name": "task2_segformer_b1_multidecoder_roi",
     "models": {
       "task2_resnet34_multidecoder": {
+        "roi_enabled": false,
         "batch_size": 16,
         "learning_rate": 0.001,
         "encoder_learning_rate": 0.00003,
@@ -99,21 +100,42 @@
         "checkpoint_path": "checkpoints/task2_resnet34_multidecoder/task2_resnet34_multidecoder.pt"
       },
       "task2_segformer_b1_multidecoder": {
+        "roi_enabled": false,
         "batch_size": 64,
         "learning_rate": 0.0001,
         "encoder_learning_rate": 0.00003,
         "freeze_encoder_epochs": 10,
         "task1_checkpoint": "checkpoints/segformer_b1/task1_segformer_b1.pt",
         "checkpoint_path": "checkpoints/task2_segformer_b1_multidecoder/task2_segformer_b1_multidecoder.pt"
+      },
+      "task2_resnet34_multidecoder_roi": {
+        "roi_enabled": true,
+        "batch_size": 64,
+        "learning_rate": 0.001,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 5,
+        "task1_checkpoint": "checkpoints/resnet34_unet/task1_resnet34_unet.pt",
+        "checkpoint_path": "checkpoints/task2_resnet34_multidecoder_roi/task2_resnet34_multidecoder_roi.pt"
+      },
+      "task2_segformer_b1_multidecoder_roi": {
+        "roi_enabled": true,
+        "batch_size": 64,
+        "learning_rate": 0.0001,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 10,
+        "task1_checkpoint": "checkpoints/segformer_b1/task1_segformer_b1.pt",
+        "checkpoint_path": "checkpoints/task2_segformer_b1_multidecoder_roi/task2_segformer_b1_multidecoder_roi.pt"
       }
     },
     "data": {
       "train_input": "data/prepared/task2/train/images",
       "train_gt": "data/prepared/task2/train/task2_gt",
       "train_lesion_prior": "data/prepared/task1/train/task1_gt",
+      "train_roi_mask": "data/prepared/task1/train/task1_gt",
       "val_input": "data/prepared/task2/val/images",
       "val_gt": "data/prepared/task2/val/task2_gt",
       "val_lesion_prior": "data/prepared/task1/val/task1_gt",
+      "val_roi_mask": "data/prepared/task1/val/task1_gt",
       "train_manifest": "splits/task2_train.csv"
     },
     "training": {
@@ -124,6 +146,8 @@
       "num_workers": 0,
       "device": "cuda",
       "prediction_threshold": 0.5,
+      "roi_margin_ratio": 0.10,
+      "roi_minimum_box_side": 16,
       "variant_sampling": "one_per_source"
     },
     "loss": {
@@ -141,19 +165,19 @@
           "gamma": 1.33
         },
         "negative_network": {
-          "weight": 1.5,
+          "weight": 0,
           "alpha": 0.75,
           "beta": 0.25,
           "gamma": 1.4
         },
         "streaks": {
-          "weight": 1.5,
+          "weight": 0,
           "alpha": 0.75,
           "beta": 0.25,
           "gamma": 1.4
         },
         "milia_like_cyst": {
-          "weight": 1.5,
+          "weight": 0,
           "alpha": 0.72,
           "beta": 0.28,
           "gamma": 1.33

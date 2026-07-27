@@ -93,10 +93,11 @@ def load_task2_settings() -> SimpleNamespace:
         "learning_rate": profile["learning_rate"],
         "encoder_learning_rate": profile["encoder_learning_rate"],
         "freeze_encoder_epochs": profile["freeze_encoder_epochs"],
+        "roi_enabled": bool(profile.get("roi_enabled", False)),
         "task1_checkpoint": profile["task1_checkpoint"],
         "checkpoint_path": profile["checkpoint_path"],
     }
-    for key in ("train_input", "train_gt", "train_lesion_prior", "val_input", "val_gt", "val_lesion_prior", "train_manifest", "task1_checkpoint", "checkpoint_path", "training_root"):
+    for key in ("train_input", "train_gt", "train_lesion_prior", "train_roi_mask", "val_input", "val_gt", "val_lesion_prior", "val_roi_mask", "train_manifest", "task1_checkpoint", "checkpoint_path", "training_root"):
         values[key] = _project_path(values[key])
     values["training_plot_path"] = values["training_root"] / model_name / "curves.png"
     attribute_loss = values.get("attribute_loss", {})

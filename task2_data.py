@@ -11,6 +11,7 @@ import cv2  # Import before torch to preserve the project's Windows OpenMP order
 import numpy as np
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 from torch.utils.data import Dataset, Sampler
 
 from data_preprocessing import TASK2_ATTRIBUTES
@@ -22,8 +23,27 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 class Task2Sample:
     image_path: Path
     mask_paths: tuple[Path, ...]
+    roi: "ROITransform"
     source_image_id: str
     sample_weight: float
+
+
+@dataclass(frozen=True)
+class ROITransform:
+    """One square crop in full-canvas pixel coordinates."""
+
+    left: int
+    top: int
+    right: int
+    bottom: int
+    canvas_height: int
+    canvas_width: int
+
+    def as_tensor(self) -> Tensor:
+        return torch.tensor(
+            (self.left, self.top, self.right, self.bottom, self.canvas_height, self.canvas_width),
+            dtype=torch.int64,
+        )
 
 
 def _source_image_id(stem: str) -> str:
@@ -35,21 +55,83 @@ def manifest_weights(manifest_path: Path) -> dict[str, float]:
         return {row["image_id"]: float(row.get("sample_weight") or 1.0) for row in csv.DictReader(file)}
 
 
-def build_task2_samples(image_dir: Path, mask_dir: Path, manifest_path: Path | None = None) -> list[Task2Sample]:
+def full_canvas_roi(height: int, width: int) -> ROITransform:
+    return ROITransform(0, 0, width, height, height, width)
+
+
+def roi_from_binary_mask(mask: np.ndarray, margin_ratio: float, minimum_box_side: int) -> ROITransform | None:
+    """Build a square ROI from the largest predicted lesion component only."""
+    if not 0 <= margin_ratio < 0.5:
+        raise ValueError("Task 2 ROI margin_ratio must be in [0, 0.5).")
+    if minimum_box_side <= 0:
+        raise ValueError("Task 2 ROI minimum_box_side must be positive.")
+    if mask.ndim != 2:
+        raise ValueError("Task 2 ROI mask must be a 2D binary image.")
+    component_count, _, stats, _ = cv2.connectedComponentsWithStats((mask > 127).astype("uint8"), connectivity=8)
+    if component_count <= 1:
+        return None
+    largest_index = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    left = int(stats[largest_index, cv2.CC_STAT_LEFT])
+    top = int(stats[largest_index, cv2.CC_STAT_TOP])
+    right = left + int(stats[largest_index, cv2.CC_STAT_WIDTH])
+    bottom = top + int(stats[largest_index, cv2.CC_STAT_HEIGHT])
+    raw_side = max(right - left, bottom - top)
+    if raw_side < minimum_box_side:
+        return None
+    height, width = mask.shape
+    side = min(int(np.ceil(raw_side * (1 + 2 * margin_ratio))), height, width)
+    center_x, center_y = (left + right) / 2, (top + bottom) / 2
+    roi_left = min(max(int(round(center_x - side / 2)), 0), width - side)
+    roi_top = min(max(int(round(center_y - side / 2)), 0), height - side)
+    return ROITransform(roi_left, roi_top, roi_left + side, roi_top + side, height, width)
+
+
+def build_task2_samples(
+    image_dir: Path,
+    mask_dir: Path,
+    manifest_path: Path | None = None,
+    roi_mask_dir: Path | None = None,
+    roi_margin_ratio: float = 0.10,
+    roi_minimum_box_side: int = 32,
+) -> list[Task2Sample]:
     image_dir, mask_dir = Path(image_dir), Path(mask_dir)
     if not image_dir.is_dir() or not mask_dir.is_dir():
         raise FileNotFoundError(f"Expected Task 2 image/label folders: {image_dir}, {mask_dir}")
+    if roi_mask_dir is not None:
+        roi_mask_dir = Path(roi_mask_dir)
+        if not roi_mask_dir.is_dir():
+            raise FileNotFoundError(f"Expected Task 1 predicted ROI-mask folder: {roi_mask_dir}")
     weights = manifest_weights(manifest_path) if manifest_path is not None else {}
     samples: list[Task2Sample] = []
+    empty_roi_count = small_roi_count = 0
     for image_path in sorted(path for path in image_dir.iterdir() if path.suffix.lower() in IMAGE_EXTENSIONS):
         mask_paths = tuple(mask_dir / f"{image_path.stem}_attribute_{attribute}.png" for attribute in TASK2_ATTRIBUTES)
         missing = [path.name for path in mask_paths if not path.is_file()]
         if missing:
             raise FileNotFoundError(f"Task 2 masks missing for {image_path.name}: {', '.join(missing)}")
+        if roi_mask_dir is None:
+            roi = full_canvas_roi(256, 256)
+        else:
+            prior_path = roi_mask_dir / f"{image_path.stem}_segmentation.png"
+            prior = cv2.imread(str(prior_path), cv2.IMREAD_GRAYSCALE)
+            if prior is None:
+                raise FileNotFoundError(f"Task 1 predicted ROI mask missing for {image_path.name}: {prior_path.name}")
+            roi = roi_from_binary_mask(prior, roi_margin_ratio, roi_minimum_box_side)
+            if roi is None:
+                if cv2.countNonZero(prior) == 0:
+                    empty_roi_count += 1
+                else:
+                    small_roi_count += 1
+                continue
         source_image_id = _source_image_id(image_path.stem)
-        samples.append(Task2Sample(image_path, mask_paths, source_image_id, weights.get(source_image_id, 1.0)))
+        samples.append(Task2Sample(image_path, mask_paths, roi, source_image_id, weights.get(source_image_id, 1.0)))
     if not samples:
         raise RuntimeError(f"No supported Task 2 images found in {image_dir}")
+    if roi_mask_dir is not None:
+        print(
+            f"Task 2 ROI samples from {image_dir.parent.name}: retained={len(samples)}, "
+            f"skipped_empty={empty_roi_count}, skipped_small={small_roi_count}."
+        )
     return samples
 
 
@@ -78,8 +160,8 @@ class OneVariantPerSourceSampler(Sampler[int]):
         return len(self.indices_by_source)
 
 
-class Task2SegmentationDataset(Dataset[tuple[Tensor, Tensor]]):
-    """Read an RGB image and its five aligned Task 2 attribute masks."""
+class Task2SegmentationDataset(Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
+    """Read and resize a lesion ROI, while preserving its full-canvas target."""
 
     def __init__(self, samples: list[Task2Sample], image_size: int) -> None:
         self.samples = samples
@@ -88,18 +170,51 @@ class Task2SegmentationDataset(Dataset[tuple[Tensor, Tensor]]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         sample = self.samples[index]
         image = cv2.imread(str(sample.image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read image: {sample.image_path}")
         if image.shape[:2] != (self.image_size, self.image_size):
             raise ValueError(f"Expected {self.image_size}x{self.image_size}: {sample.image_path.name}")
+        if image.shape[:2] != (sample.roi.canvas_height, sample.roi.canvas_width):
+            raise ValueError(f"ROI canvas size mismatch for {sample.image_path.name}")
         masks = [cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in sample.mask_paths]
         if any(mask is None for mask in masks):
             raise FileNotFoundError(f"Cannot read one or more masks for {sample.image_path.name}")
         if any(mask.shape != (self.image_size, self.image_size) for mask in masks):
             raise ValueError(f"Mask size mismatch for {sample.image_path.name}")
+        full_target = np.stack([(mask > 127).astype("float32") for mask in masks], axis=0)
+        roi = sample.roi
+        image = image[roi.top : roi.bottom, roi.left : roi.right]
+        image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+        roi_target = np.stack(
+            [
+                cv2.resize(mask[roi.top : roi.bottom, roi.left : roi.right], (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+                for mask in full_target
+            ],
+            axis=0,
+        )
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
-        target = torch.from_numpy(np.stack([(mask > 127).astype("float32") for mask in masks], axis=0))
-        return torch.from_numpy(image.transpose(2, 0, 1)), target
+        return (
+            torch.from_numpy(image.transpose(2, 0, 1)),
+            torch.from_numpy(roi_target.astype("float32")),
+            roi.as_tensor(),
+            torch.from_numpy(full_target),
+        )
+
+
+def restore_logits_to_canvas(logits: Tensor, rois: Tensor, outside_logit: float = -20.0) -> Tensor:
+    """Map per-ROI logits back to full canvases; ROI-exterior pixels are negative."""
+    if logits.ndim != 4 or rois.ndim != 2 or rois.shape != (logits.shape[0], 6):
+        raise ValueError("Expected logits [B,C,H,W] and ROI metadata [B,6].")
+    canvas_height, canvas_width = (int(rois[0, 4].item()), int(rois[0, 5].item()))
+    if torch.any(rois[:, 4] != canvas_height) or torch.any(rois[:, 5] != canvas_width):
+        raise ValueError("A batch must have one common full-canvas size.")
+    restored = logits.new_full((logits.shape[0], logits.shape[1], canvas_height, canvas_width), outside_logit)
+    for index, roi in enumerate(rois):
+        left, top, right, bottom = (int(value.item()) for value in roi[:4])
+        restored[index : index + 1, :, top:bottom, left:right] = F.interpolate(
+            logits[index : index + 1], size=(bottom - top, right - left), mode="bilinear", align_corners=False
+        )
+    return restored

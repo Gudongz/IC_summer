@@ -107,8 +107,9 @@ every fixed variant in each epoch. Validation is unchanged.
 
 ## Train Task 2 attributes
 
-Task 2's primary experiment is RGB-only. Select either
-`task2_resnet34_multidecoder` or `task2_segformer_b1_multidecoder` in
+Task 2's primary experiment is RGB-only with Task 1 prediction-guided ROI
+cropping. Select either `task2_resnet34_multidecoder_roi` or
+`task2_segformer_b1_multidecoder_roi` in
 `settings.json` under `task2.model_name`. Both models share one encoder
 initialized from the matching Task 1 checkpoint, then use five complete,
 parameter-independent decoders (one per attribute).
@@ -117,6 +118,19 @@ Then train:
 
 ```powershell
 python train_task2.py
+```
+
+The ROI profiles use the largest connected component in the Task 1 predicted
+masks in `data/prepared/task2/*/mask` to crop a square lesion region (10%
+safety margin), resize it to 256x256, and
+restore validation predictions to the complete 256x256 canvas. The mask is
+only used to locate the crop: it is not supplied to the model as a fourth input
+channel. Empty predictions and predicted boxes below 32 pixels are skipped.
+Generate the train and validation masks with the same Task 1 checkpoint before
+training:
+
+```powershell
+python prepare_task2_priors.py --model segformer_b1 --split both
 ```
 
 The selected Task 2 profile transfers only the matching Task 1 encoder. It
@@ -141,11 +155,9 @@ The configured checkpoint path is the validation-best model; the trainer also
 writes `<checkpoint_name>_latest.pt` after every epoch. Task 1 settings and
 training remain independent.
 
-`train_lesion_prior` and `val_lesion_prior`, together with the generated prior
-mask folders, are retained only as data assets for a later, separate ablation.
-They are not read by the RGB-only Task 2 dataset or models. A future RGB+mask
-four-channel model should use a new profile and be compared separately, because
-the extra channel changes the pretrained encoder input distribution.
+The non-ROI profiles remain available as an RGB-only full-image comparison.
+A future RGB+mask four-channel model should use a separate profile, because the
+extra channel changes the pretrained encoder input distribution.
 
 ## Inference and evaluation
 
