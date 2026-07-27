@@ -1,10 +1,26 @@
 {
-  "model_name": "uctransnet",
+  "model_name": "lb_unet",
   "models": {
     "unet": {
       "batch_size": 32,
       "learning_rate": 0.001,
       "checkpoint_path": "checkpoints/unet/task1_unet.pt"
+    },
+    "resnet34_unet": {
+      "batch_size": 128,
+      "learning_rate": 0.001,
+      "encoder_learning_rate": 0.00003,
+      "freeze_encoder_epochs": 10,
+      "checkpoint_path": "checkpoints/resnet34_unet/task1_resnet34_unet.pt",
+      "pretrained": true
+    },
+    "resnet50_unet": {
+      "batch_size": 64,
+      "learning_rate": 0.001,
+      "encoder_learning_rate": 0.00003,
+      "freeze_encoder_epochs": 10,
+      "checkpoint_path": "checkpoints/resnet50_unet/task1_resnet50_unet.pt",
+      "pretrained": true
     },
     "lb_unet": {
       "batch_size": 64,
@@ -12,8 +28,10 @@
       "checkpoint_path": "checkpoints/lb_unet/task1_lb_unet.pt"
     },
     "segformer_b1": {
-      "batch_size": 64,
+      "batch_size": 128,
       "learning_rate": 0.0001,
+      "encoder_learning_rate": 0.00003,
+      "freeze_encoder_epochs": 10,
       "checkpoint_path": "checkpoints/segformer_b1/task1_segformer_b1.pt",
       "pretrained": true
     },
@@ -38,22 +56,125 @@
   },
   "training": {
     "image_size": 256,
-    "epochs": 30,
+    "epochs": 100,
     "weight_decay": 0.00001,
     "random_seed": 42,
     "num_workers": 0,
     "device": "cuda",
     "prediction_threshold": 0.5,
+    "variant_sampling": "one_per_source",
     "lb_region_loss_weight": 0.25,
-    "lb_boundary_loss_weight": 0.25
+    "lb_boundary_loss_weight": 0.25,
+    "loss": {
+      "bce_weight": 0.7,
+      "dice_weight": 1.0,
+      "bce_weight_decay": {
+        "enabled": false,
+        "target_weight": 0.05,
+        "decay_epochs":20
+      }
+    }
   },
   "inference": {
     "batch_size": 64
   },
   "evaluation": {
     "batch_size": 16,
+    "validation_input": "data/train/images",
+    "validation_ground_truth": "data/train/task1_gt",
+    "validation_manifest": "splits/task1_val.csv",
     "sample_input": "data/prepared/task1/val/images",
     "sample_ground_truth": "data/prepared/task1/val/task1_gt",
     "output_root": "outputs/task1/evaluation"
+  },
+  "task2": {
+    "model_name": "task2_resnet34_unet",
+    "models": {
+      "task2_resnet34_unet": {
+        "batch_size": 64,
+        "learning_rate": 0.001,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 5,
+        "task1_checkpoint": "checkpoints/resnet34_unet/task1_resnet34_unet.pt",
+        "checkpoint_path": "checkpoints/task2_resnet34_unet/task2_resnet34_unet.pt"
+      },
+      "task2_segformer_b1": {
+        "batch_size": 64,
+        "learning_rate": 0.0001,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 5,
+        "task1_checkpoint": "checkpoints/segformer_b1/task1_segformer_b1.pt",
+        "checkpoint_path": "checkpoints/task2_segformer_b1/task2_segformer_b1_test.pt"
+      }
+    },
+    "data": {
+      "train_input": "data/prepared/task2/train/images",
+      "train_gt": "data/prepared/task2/train/task2_gt",
+      "train_lesion_prior": "data/prepared/task1/train/task1_gt",
+      "val_input": "data/prepared/task2/val/images",
+      "val_gt": "data/prepared/task2/val/task2_gt",
+      "val_lesion_prior": "data/prepared/task1/val/task1_gt",
+      "train_manifest": "splits/task2_train.csv"
+    },
+    "training": {
+      "image_size": 256,
+      "epochs": 100,
+      "weight_decay": 0.00001,
+      "random_seed": 42,
+      "num_workers": 0,
+      "device": "cuda",
+      "prediction_threshold": 0.5,
+      "variant_sampling": "one_per_source"
+    },
+    "loss": {
+      "bce_weight": 1.0,
+      "focal_tversky_weight": 1.0,
+      "alpha": 0.7,
+      "beta": 0.3,
+      "gamma": 1.33,
+      "epsilon": 0.000001,
+      "attribute_loss": {
+        "pigment_network": {
+          "weight": 0.5,
+          "alpha": 0.7,
+          "beta": 0.3,
+          "gamma": 1.33
+        },
+        "negative_network": {
+          "weight": 0,
+          "alpha": 0.75,
+          "beta": 0.25,
+          "gamma": 1.4
+        },
+        "streaks": {
+          "weight": 0,
+          "alpha": 0.75,
+          "beta": 0.25,
+          "gamma": 1.4
+        },
+        "milia_like_cyst": {
+          "weight": 0,
+          "alpha": 0.72,
+          "beta": 0.28,
+          "gamma": 1.33
+        },
+        "globules": {
+          "weight": 1,
+          "alpha": 0.7,
+          "beta": 0.3,
+          "gamma": 1.33
+        }
+      }
+    },
+    "dynamic_weights": {
+      "min_delta": 0.002,
+      "patience": 5,
+      "decrease_factor": 1,
+      "minimum_factor": 0.50,
+      "recovery_factor": 1
+    },
+    "output": {
+      "training_root": "outputs/task2/training"
+    }
   }
 }

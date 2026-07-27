@@ -51,82 +51,75 @@ class SegFormerB1(nn.Module):
         logits = self.head(self.fuse(torch.cat(decoded, dim=1)))
         return F.interpolate(logits, size=input_size, mode="bilinear", align_corners=False)
 
-    def load_compatible_state_dict(self, state_dict: dict[str, Tensor]) -> None:
-        """Load checkpoints saved by the legacy Hugging Face SegFormer layout.
+    def load_compatible_state_dict(self, state_dict: dict[str, Tensor]) -> bool:
+        """Load checkpoints saved by either Hugging Face SegFormer layout.
 
         Transformers renamed MiT encoder modules between versions. The tensor
-        shapes did not change, so old project checkpoints only need key
-        translation rather than retraining.
+        shapes did not change, so checkpoints only need key translation rather
+        than retraining when the installed version uses the other layout.
         """
         expected_keys = self.state_dict().keys()
-        if any(key.startswith("encoder.encoder.") for key in expected_keys):
-            # Older transformers releases still use the exact checkpoint
-            # naming scheme, so translating it would be incorrect.
+        expected_legacy = any(key.startswith("encoder.encoder.") for key in expected_keys)
+        checkpoint_legacy = any(key.startswith("encoder.encoder.") for key in state_dict)
+        expected_short_attention_names = any(".attention.q_proj." in key for key in expected_keys)
+        checkpoint_keys = set(state_dict)
+        if expected_legacy == checkpoint_legacy and checkpoint_keys == set(expected_keys):
             self.load_state_dict(state_dict)
-            return
-        if not any(key.startswith("encoder.encoder.") for key in state_dict):
-            self.load_state_dict(state_dict)
-            return
+            return False
 
         translated: dict[str, Tensor] = {}
         for key, value in state_dict.items():
-            key = re.sub(
-                r"^encoder\.encoder\.patch_embeddings\.(\d+)\.",
-                r"encoder.stages.\1.patch_embeddings.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_1\.",
-                r"encoder.stages.\1.blocks.\2.layernorm_before.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_2\.",
-                r"encoder.stages.\1.blocks.\2.layernorm_after.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.(query|key|value)\.",
-                r"encoder.stages.\1.blocks.\2.attention.\3_proj.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.output\.dense\.",
-                r"encoder.stages.\1.blocks.\2.attention.o_proj.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.sr\.",
-                r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.sequence_reduction.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.layer_norm\.",
-                r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.layer_norm.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense1\.",
-                r"encoder.stages.\1.blocks.\2.mlp.fc1.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense2\.",
-                r"encoder.stages.\1.blocks.\2.mlp.fc2.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dwconv\.dwconv\.",
-                r"encoder.stages.\1.blocks.\2.mlp.dwconv.dwconv.",
-                key,
-            )
-            key = re.sub(
-                r"^encoder\.encoder\.layer_norm\.(\d+)\.",
-                r"encoder.stages.\1.layer_norm.",
-                key,
-            )
-            key = key.replace(".attention.query_proj.", ".attention.q_proj.")
-            key = key.replace(".attention.key_proj.", ".attention.k_proj.")
-            key = key.replace(".attention.value_proj.", ".attention.v_proj.")
+            if expected_legacy != checkpoint_legacy:
+                key = self._translate_encoder_key(key, to_legacy=expected_legacy)
+            key = self._translate_attention_projection_alias(key, use_short_names=expected_short_attention_names)
             translated[key] = value
         self.load_state_dict(translated)
+        return True
+
+    @staticmethod
+    def _translate_encoder_key(key: str, to_legacy: bool) -> str:
+        """Translate one encoder key between ``encoder.encoder`` and ``stages`` layouts."""
+        if to_legacy:
+            rules = (
+                (r"^encoder\.stages\.(\d+)\.patch_embeddings\.", r"encoder.encoder.patch_embeddings.\1."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.layernorm_before\.", r"encoder.encoder.block.\1.\2.layer_norm_1."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.layernorm_after\.", r"encoder.encoder.block.\1.\2.layer_norm_2."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.q_proj\.", r"encoder.encoder.block.\1.\2.attention.self.query."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.k_proj\.", r"encoder.encoder.block.\1.\2.attention.self.key."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.v_proj\.", r"encoder.encoder.block.\1.\2.attention.self.value."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.o_proj\.", r"encoder.encoder.block.\1.\2.attention.output.dense."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.sequence_reduction\.sequence_reduction\.", r"encoder.encoder.block.\1.\2.attention.self.sr."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.attention\.sequence_reduction\.layer_norm\.", r"encoder.encoder.block.\1.\2.attention.self.layer_norm."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.mlp\.fc1\.", r"encoder.encoder.block.\1.\2.mlp.dense1."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.mlp\.fc2\.", r"encoder.encoder.block.\1.\2.mlp.dense2."),
+                (r"^encoder\.stages\.(\d+)\.blocks\.(\d+)\.mlp\.dwconv\.dwconv\.", r"encoder.encoder.block.\1.\2.mlp.dwconv.dwconv."),
+                (r"^encoder\.stages\.(\d+)\.layer_norm\.", r"encoder.encoder.layer_norm.\1."),
+            )
+        else:
+            rules = (
+                (r"^encoder\.encoder\.patch_embeddings\.(\d+)\.", r"encoder.stages.\1.patch_embeddings."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_1\.", r"encoder.stages.\1.blocks.\2.layernorm_before."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.layer_norm_2\.", r"encoder.stages.\1.blocks.\2.layernorm_after."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.(query|key|value)\.", r"encoder.stages.\1.blocks.\2.attention.\3_proj."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.output\.dense\.", r"encoder.stages.\1.blocks.\2.attention.o_proj."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.sr\.", r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.sequence_reduction."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.attention\.self\.layer_norm\.", r"encoder.stages.\1.blocks.\2.attention.sequence_reduction.layer_norm."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense1\.", r"encoder.stages.\1.blocks.\2.mlp.fc1."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dense2\.", r"encoder.stages.\1.blocks.\2.mlp.fc2."),
+                (r"^encoder\.encoder\.block\.(\d+)\.(\d+)\.mlp\.dwconv\.dwconv\.", r"encoder.stages.\1.blocks.\2.mlp.dwconv.dwconv."),
+                (r"^encoder\.encoder\.layer_norm\.(\d+)\.", r"encoder.stages.\1.layer_norm."),
+            )
+        for pattern, replacement in rules:
+            key = re.sub(pattern, replacement, key)
+        return key
+
+    @staticmethod
+    def _translate_attention_projection_alias(key: str, use_short_names: bool) -> str:
+        """Handle Transformers' ``query_proj`` ↔ ``q_proj`` rename."""
+        if use_short_names:
+            for old, new in (("query_proj", "q_proj"), ("key_proj", "k_proj"), ("value_proj", "v_proj")):
+                key = key.replace(f".attention.{old}.", f".attention.{new}.")
+        else:
+            for old, new in (("q_proj", "query_proj"), ("k_proj", "key_proj"), ("v_proj", "value_proj")):
+                key = key.replace(f".attention.{old}.", f".attention.{new}.")
+        return key

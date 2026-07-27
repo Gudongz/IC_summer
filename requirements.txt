@@ -12,3 +12,6 @@ tqdm
 
 # SegFormer-B1
 transformers
+
+# ResNet-34/50 U-Net (must match the installed PyTorch CUDA build)
+torchvision

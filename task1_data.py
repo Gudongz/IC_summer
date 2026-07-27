@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import random
 from typing import Iterable
 
 # Import OpenCV before PyTorch to avoid the Windows OpenMP runtime load-order
@@ -10,7 +11,7 @@ from typing import Iterable
 import cv2  # noqa: F401
 import torch
 from torch import Tensor
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -61,3 +62,29 @@ class LesionSegmentationDataset(Dataset[tuple[Tensor, Tensor]]):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
         mask = (mask > 127).astype("float32")
         return torch.from_numpy(image.transpose(2, 0, 1)), torch.from_numpy(mask).unsqueeze(0)
+
+
+class OneVariantPerSourceSampler(Sampler[int]):
+    """Choose one random fixed augmentation for every original image each epoch."""
+
+    def __init__(self, pairs: Iterable[tuple[Path, Path]], seed: int) -> None:
+        self.seed = seed
+        self.epoch = 0
+        self.indices_by_source: dict[str, list[int]] = {}
+        for index, (image_path, _) in enumerate(pairs):
+            source_id = image_path.stem.split("__aug_", maxsplit=1)[0]
+            self.indices_by_source.setdefault(source_id, []).append(index)
+        if not self.indices_by_source:
+            raise ValueError("OneVariantPerSourceSampler requires at least one pair.")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        selected = [rng.choice(indices) for _, indices in sorted(self.indices_by_source.items())]
+        rng.shuffle(selected)
+        return iter(selected)
+
+    def __len__(self) -> int:
+        return len(self.indices_by_source)

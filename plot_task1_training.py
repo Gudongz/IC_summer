@@ -29,13 +29,18 @@ def main() -> None:
 
     axes[0, 0].plot(epochs, history["train_total_loss"], label="Train")
     axes[0, 0].plot(epochs, history["val_total_loss"], label="Validation")
-    axes[0, 0].set(title="Total loss (BCE + Dice loss)", xlabel="Epoch", ylabel="Loss")
+    axes[0, 0].set(title="Dynamic weighted total loss", xlabel="Epoch", ylabel="Loss")
     axes[0, 0].legend()
 
     axes[0, 1].plot(epochs, history["train_bce"], label="Train BCE")
     axes[0, 1].plot(epochs, history["val_bce"], label="Validation BCE")
     axes[0, 1].set(title="Binary cross-entropy", xlabel="Epoch", ylabel="BCE loss")
-    axes[0, 1].legend()
+    weight_axis = axes[0, 1].twinx()
+    weight_axis.plot(epochs, history.get("bce_weight", [1.0] * len(epochs)), color="tab:green", linestyle="--", label="BCE weight")
+    weight_axis.set_ylabel("BCE weight", color="tab:green")
+    lines, labels = axes[0, 1].get_legend_handles_labels()
+    weight_lines, weight_labels = weight_axis.get_legend_handles_labels()
+    axes[0, 1].legend(lines + weight_lines, labels + weight_labels)
 
     axes[1, 0].plot(epochs, history["train_dice"], label="Train Dice")
     axes[1, 0].plot(epochs, history["val_dice"], label="Validation Dice")

@@ -32,13 +32,15 @@ class ValidationPair:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare Task 1 model checkpoints on one validation set.")
-    parser.add_argument("--models", nargs="+", choices=SUPPORTED_TASK1_MODELS, default=list(SUPPORTED_TASK1_MODELS))
-    parser.add_argument("--validation-images", type=Path, default=settings.task1_val_input)
-    parser.add_argument("--validation-masks", type=Path, default=settings.task1_val_gt)
+    parser.add_argument("--models", nargs="+", choices=SUPPORTED_TASK1_MODELS, default=None)
+    parser.add_argument("--validation-images", type=Path, default=settings.validation_input)
+    parser.add_argument("--validation-masks", type=Path, default=settings.validation_ground_truth)
+    parser.add_argument("--validation-manifest", type=Path, default=settings.validation_manifest, help="CSV defining the source-image validation IDs.")
     parser.add_argument("--sample-input", type=Path, default=settings.sample_input, help="Folder whose images will receive per-model masks and comparisons.")
     parser.add_argument("--sample-ground-truth", type=Path, default=settings.sample_ground_truth, help="Matching mask folder for sample comparison images.")
     parser.add_argument("--output-root", type=Path, default=settings.output_root)
     parser.add_argument("--batch-size", type=int, default=settings.evaluation_batch_size)
+    parser.add_argument("--skip-samples", action="store_true", help="Evaluate validation metrics only; do not rewrite sample masks or comparison images.")
     parser.add_argument("--device", default=None, help="Defaults to the device configured in settings.json.")
     return parser.parse_args()
 
@@ -50,21 +52,22 @@ def image_paths(folder: Path) -> list[Path]:
     return paths
 
 
-def validation_pairs(image_dir: Path, mask_dir: Path) -> list[ValidationPair]:
+def validation_pairs(image_dir: Path, mask_dir: Path, manifest_path: Path | None) -> list[ValidationPair]:
+    requested_ids: set[str] | None = None
+    if manifest_path is not None:
+        with manifest_path.open(newline="", encoding="utf-8-sig") as file:
+            requested_ids = {row["image_id"] for row in csv.DictReader(file) if row.get("split", "val") == "val"}
+        if not requested_ids:
+            raise RuntimeError(f"No validation IDs found in {manifest_path}")
     pairs = []
     for image_path in image_paths(image_dir):
+        if requested_ids is not None and image_path.stem not in requested_ids:
+            continue
         mask_path = mask_dir / f"{image_path.stem}_segmentation.png"
         if not mask_path.is_file():
             raise FileNotFoundError(f"Missing validation mask for {image_path.name}: {mask_path}")
         pairs.append(ValidationPair(image_path, mask_path))
     return pairs
-
-
-def rgb_tensor(path: Path, image_size: int, strict_size: bool) -> Tensor:
-    image = Image.open(path).convert("RGB")
-    if strict_size and image.size != (image_size, image_size):
-        raise ValueError(f"Expected prepared {image_size}x{image_size} image: {path}")
-    return torch.from_numpy(np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0)
 
 
 def mask_array(path: Path, image_size: int, strict_size: bool) -> np.ndarray:
@@ -97,15 +100,34 @@ def soft_dice(probabilities: np.ndarray, target: np.ndarray) -> float:
     return float((2 * (probabilities * target_float).sum() + EPS) / (probabilities.sum() + target_float.sum() + EPS))
 
 
+def restore_logits(logits: Tensor, image: Image.Image, geometry: tuple[int, int, int, int]) -> Tensor:
+    """Undo the evaluation resize/pad transform and return original-size logits."""
+    left, top, resized_width, resized_height = geometry
+    logits = logits[:, :, top : top + resized_height, left : left + resized_width]
+    return F.interpolate(logits, size=(image.height, image.width), mode="bilinear", align_corners=False)
+
+
+def prepare_source_mask(path: Path, geometry: tuple[int, int, int, int]) -> np.ndarray:
+    """Resize/pad an original GT mask into the model's 256px coordinate system."""
+    left, top, resized_width, resized_height = geometry
+    mask = Image.open(path).convert("L")
+    resized = mask.resize((resized_width, resized_height), Image.Resampling.NEAREST)
+    canvas = Image.new("L", (settings.image_size, settings.image_size), color=0)
+    canvas.paste(resized, (left, top))
+    return np.asarray(canvas) > 127
+
+
 def evaluate_validation(model: nn.Module, pairs: list[ValidationPair], device: torch.device, batch_size: int) -> tuple[dict[str, float], list[dict[str, float | str]]]:
     records: list[dict[str, float | str]] = []
     with torch.inference_mode():
         for start in tqdm(range(0, len(pairs), batch_size), desc="Validation", unit="batch", leave=False, ascii=True):
             batch_pairs = pairs[start : start + batch_size]
-            images = torch.stack([rgb_tensor(pair.image, settings.image_size, strict_size=True) for pair in batch_pairs]).to(device)
+            originals = [Image.open(pair.image).convert("RGB") for pair in batch_pairs]
+            prepared = [prepare_sample_input(image) for image in originals]
+            images = torch.stack([tensor for tensor, _ in prepared]).to(device)
             probabilities = torch.sigmoid(model(images)).squeeze(1).cpu().numpy()
-            for pair, probability in zip(batch_pairs, probabilities):
-                target = mask_array(pair.mask, settings.image_size, strict_size=True)
+            for pair, (_, geometry), probability in zip(batch_pairs, prepared, probabilities):
+                target = prepare_source_mask(pair.mask, geometry)
                 prediction = probability >= settings.prediction_threshold
                 hd, hd95 = hausdorff_distances(prediction, target)
                 records.append({"image": pair.image.name, "dice": dice_coefficient(prediction, target), "dice_confidence": soft_dice(probability, target), "hd": hd, "hd95": hd95})
@@ -126,12 +148,13 @@ def prepare_sample_input(image: Image.Image) -> tuple[Tensor, tuple[int, int, in
     return tensor, (left, top, resized_width, resized_height)
 
 
-def predict_sample_mask(model: nn.Module, image: Image.Image, device: torch.device) -> np.ndarray:
+def predict_sample_outputs(model: nn.Module, image: Image.Image, device: torch.device) -> tuple[np.ndarray, np.ndarray]:
     tensor, (left, top, resized_width, resized_height) = prepare_sample_input(image)
     with torch.inference_mode():
         logits = model(tensor.unsqueeze(0).to(device))[:, :, top : top + resized_height, left : left + resized_width]
         logits = F.interpolate(logits, size=(image.height, image.width), mode="bilinear", align_corners=False)
-    return torch.sigmoid(logits[0, 0]).cpu().numpy() >= settings.prediction_threshold
+    probabilities = torch.sigmoid(logits[0, 0]).cpu().numpy()
+    return probabilities, probabilities >= settings.prediction_threshold
 
 
 def write_csv(path: Path, rows: list[dict[str, float | int | str]], fieldnames: list[str]) -> None:
@@ -144,13 +167,14 @@ def write_csv(path: Path, rows: list[dict[str, float | int | str]], fieldnames: 
 
 def export_sample_predictions(model: nn.Module, model_name: str, input_dir: Path, ground_truth_dir: Path | None, output_root: Path, device: torch.device) -> int:
     model_root = output_root / "sample_predictions" / model_name
-    masks_dir, comparisons_dir = model_root / "masks", model_root / "comparisons"
+    masks_dir = model_root / "masks"
+    comparisons_dir = model_root / "comparisons"
     masks_dir.mkdir(parents=True, exist_ok=True)
     comparisons_dir.mkdir(parents=True, exist_ok=True)
     count = 0
     for image_path in tqdm(image_paths(input_dir), desc=f"Samples ({model_name})", unit="image", leave=False, ascii=True):
         image = Image.open(image_path).convert("RGB")
-        prediction = predict_sample_mask(model, image, device)
+        probabilities, prediction = predict_sample_outputs(model, image, device)
         Image.fromarray(prediction.astype(np.uint8) * 255).save(masks_dir / f"{image_path.stem}_segmentation.png")
         target = None
         if ground_truth_dir is not None:
@@ -159,7 +183,11 @@ def export_sample_predictions(model: nn.Module, model_name: str, input_dir: Path
                 target = mask_array(target_path, settings.image_size, strict_size=False)
                 if target.shape != prediction.shape:
                     raise ValueError(f"Sample GT size mismatch for {image_path.name}: {target.shape} vs {prediction.shape}")
-        save_prediction_comparison(image, target, prediction, comparisons_dir / f"{image_path.stem}_comparison.png")
+        save_prediction_comparison(
+            image, target, prediction,
+            comparisons_dir / f"{image_path.stem}_comparison.png",
+            probabilities=probabilities,
+        )
         count += 1
     return count
 
@@ -170,11 +198,21 @@ def main() -> None:
         raise ValueError("--batch-size must be positive")
     device_name = args.device or (settings.device if settings.device == "cpu" or torch.cuda.is_available() else "cpu")
     device = torch.device(device_name)
-    pairs = validation_pairs(args.validation_images, args.validation_masks)
+    pairs = validation_pairs(args.validation_images, args.validation_masks, args.validation_manifest)
     summaries: list[dict[str, float | int | str]] = []
     per_image_rows: list[dict[str, float | str]] = []
 
-    model_progress = tqdm(args.models, desc="Models", unit="model", ascii=True)
+    if args.models is None:
+        model_names = [name for name in SUPPORTED_TASK1_MODELS if settings.model_profiles[name]["checkpoint_path"].is_file()]
+        skipped = [name for name in SUPPORTED_TASK1_MODELS if name not in model_names]
+        if skipped:
+            print(f"Skipping models without checkpoints: {', '.join(skipped)}")
+        if not model_names:
+            raise RuntimeError("No configured checkpoints found. Train at least one model or pass --models explicitly.")
+    else:
+        model_names = args.models
+
+    model_progress = tqdm(model_names, desc="Models", unit="model", ascii=True)
     for model_name in model_progress:
         profile = settings.model_profiles[model_name]
         print(f"Evaluating {model_name}: {profile['checkpoint_path']}")
@@ -182,8 +220,11 @@ def main() -> None:
         summary, records = evaluate_validation(model, pairs, device, args.batch_size)
         summaries.append({"model": model_name, "checkpoint": str(profile["checkpoint_path"]), "samples": len(records), **summary})
         per_image_rows.extend({"model": model_name, **record} for record in records)
-        exported = export_sample_predictions(model, model_name, args.sample_input, args.sample_ground_truth, args.output_root, device)
-        print(f"  Dice={summary['dice']:.4f}, confidence Dice={summary['dice_confidence']:.4f}, HD={summary['hd']:.2f}px, HD95={summary['hd95']:.2f}px; exported {exported} sample images")
+        exported = 0
+        if not args.skip_samples:
+            exported = export_sample_predictions(model, model_name, args.sample_input, args.sample_ground_truth, args.output_root, device)
+        suffix = "sample export skipped" if args.skip_samples else f"exported {exported} sample images"
+        print(f"  Dice={summary['dice']:.4f}, confidence Dice={summary['dice_confidence']:.4f}, HD={summary['hd']:.2f}px, HD95={summary['hd95']:.2f}px; {suffix}")
         model_progress.set_postfix(model=model_name, dice=f"{summary['dice']:.4f}")
         del model
         gc.collect()
