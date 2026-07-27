@@ -107,21 +107,11 @@ every fixed variant in each epoch. Validation is unchanged.
 
 ## Train Task 2 attributes
 
-Task 2 uses the fixed augmented images in `data/prepared/task2/`. Select either
-`task2_resnet34_unet` or `task2_segformer_b1` in `settings.json` under
-`task2.model_name`. Before the first lesion-aware run, create Task 1 predicted
-lesion priors for both splits:
-
-```powershell
-python prepare_task2_priors.py --model segformer_b1 --split both
-```
-
-This writes binary priors beside each fixed Task 2 split:
-
-```text
-data/prepared/task2/train/mask/<sample>_segmentation.png
-data/prepared/task2/val/mask/<sample>_segmentation.png
-```
+Task 2's primary experiment is RGB-only. Select either
+`task2_resnet34_multidecoder` or `task2_segformer_b1_multidecoder` in
+`settings.json` under `task2.model_name`. Both models share one encoder
+initialized from the matching Task 1 checkpoint, then use five complete,
+parameter-independent decoders (one per attribute).
 
 Then train:
 
@@ -129,9 +119,9 @@ Then train:
 python train_task2.py
 ```
 
-The selected Task 2 profile transfers the matching Task 1 encoder checkpoint,
-uses the RGB image plus its predicted lesion prior, and outputs five independent
-attribute logits (each is passed through sigmoid independently). Each active attribute uses equal-coefficient BCE and
+The selected Task 2 profile transfers only the matching Task 1 encoder. It
+accepts an RGB image and outputs five independent attribute logits (each is
+passed through sigmoid independently). Each active attribute uses equal-coefficient BCE and
 Focal Tversky loss; `task2.loss.attribute_loss` sets its initial weight and its
 own Tversky parameters. The dynamic policy reduces a stagnant attribute's loss
 weight, then restores it when validation Dice improves.
@@ -150,6 +140,12 @@ sampler. Validation is never augmented or randomly sampled.
 The configured checkpoint path is the validation-best model; the trainer also
 writes `<checkpoint_name>_latest.pt` after every epoch. Task 1 settings and
 training remain independent.
+
+`train_lesion_prior` and `val_lesion_prior`, together with the generated prior
+mask folders, are retained only as data assets for a later, separate ablation.
+They are not read by the RGB-only Task 2 dataset or models. A future RGB+mask
+four-channel model should use a new profile and be compared separately, because
+the extra channel changes the pretrained encoder input distribution.
 
 ## Inference and evaluation
 

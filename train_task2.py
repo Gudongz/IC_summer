@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 
 from config import load_task2_settings
 from data_preprocessing import TASK2_ATTRIBUTES
-from models import Task2ResNet34UNet, Task2SegFormerB1
+from models import Task2ResNet34MultiDecoder, Task2SegFormerB1MultiDecoder
 from task2_data import OneVariantPerSourceSampler, Task2SegmentationDataset, build_task2_samples
 from training_common import (
     SegmentationTrainer, build_differential_adamw, keep_frozen_encoder_in_eval,
@@ -121,15 +121,15 @@ class Task2Trainer(SegmentationTrainer):
         self.dynamic_weights = DynamicAttributeWeights(settings, self.base_weights)
 
     def build_model(self) -> nn.Module:
-        if self.settings.model_name == "task2_resnet34_unet":
-            return Task2ResNet34UNet(pretrained=False)
-        if self.settings.model_name == "task2_segformer_b1":
-            return Task2SegFormerB1(pretrained=False)
+        if self.settings.model_name == "task2_resnet34_multidecoder":
+            return Task2ResNet34MultiDecoder(pretrained=False)
+        if self.settings.model_name == "task2_segformer_b1_multidecoder":
+            return Task2SegFormerB1MultiDecoder(pretrained=False)
         raise ValueError(f"Unsupported Task 2 model: {self.settings.model_name}")
 
     def build_loaders(self) -> tuple[DataLoader, DataLoader, int, int]:
-        train_samples = build_task2_samples(self.settings.train_input, self.settings.train_gt, self.settings.train_lesion_prior, self.settings.train_manifest)
-        val_samples = build_task2_samples(self.settings.val_input, self.settings.val_gt, self.settings.val_lesion_prior)
+        train_samples = build_task2_samples(self.settings.train_input, self.settings.train_gt, self.settings.train_manifest)
+        val_samples = build_task2_samples(self.settings.val_input, self.settings.val_gt)
         train_dataset = Task2SegmentationDataset(train_samples, self.settings.image_size)
         val_dataset = Task2SegmentationDataset(val_samples, self.settings.image_size)
         if self.settings.variant_sampling == "one_per_source":
@@ -157,6 +157,7 @@ class Task2Trainer(SegmentationTrainer):
         return {
             "task": 2,
             "model_name": self.settings.model_name,
+            "architecture": "rgb_shared_encoder_five_full_attribute_decoders",
             "task1_checkpoint": str(self.settings.task1_checkpoint),
             "loss": {
                 "bce_weight": self.settings.bce_weight,
@@ -194,12 +195,11 @@ class Task2Trainer(SegmentationTrainer):
         phase = "Train" if training else "Validation"
         progress = tqdm(loader, desc=f"Epoch {epoch:03d}/{self.settings.epochs} {phase}", unit="batch", leave=False)
         with torch.set_grad_enabled(training):
-            for images, lesion_priors, targets in progress:
+            for images, targets in progress:
                 images = images.to(self.device, non_blocking=True)
-                lesion_priors = lesion_priors.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True)
                 with torch.autocast(device_type=self.device.type, enabled=self.device.type == "cuda"):
-                    logits = model(images, lesion_priors)
+                    logits = model(images)
                     focal_losses = focal_tversky_per_attribute(logits, targets, self.alpha, self.beta, self.gamma, self.settings.epsilon)
                     bce_losses = bce_per_attribute(logits, targets)
                     per_attribute_loss = self.settings.focal_tversky_weight * focal_losses + self.settings.bce_weight * bce_losses

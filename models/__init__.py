@@ -7,6 +7,7 @@ from .resnet_unet import ResNetUNet
 from .segformer_b1 import SegFormerB1
 from .task2_resnet34_unet import Task2ResNet34UNet
 from .task2_segformer_b1 import Task2SegFormerB1
+from .task2_multidecoder import Task2ResNet34MultiDecoder, Task2SegFormerB1MultiDecoder
 from .unet import UNet
 from .uctransnet import UCTransNet
 
@@ -34,5 +35,6 @@ def build_task1_model(model_name: str, pretrained: bool = False) -> nn.Module:
 
 __all__ = [
     "LBUNet", "ResNetUNet", "SegFormerB1", "UCTransNet", "UNet",
-    "Task2ResNet34UNet", "Task2SegFormerB1", "SUPPORTED_TASK1_MODELS", "build_task1_model",
+    "Task2ResNet34UNet", "Task2SegFormerB1", "Task2ResNet34MultiDecoder", "Task2SegFormerB1MultiDecoder",
+    "SUPPORTED_TASK1_MODELS", "build_task1_model",
 ]
