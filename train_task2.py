@@ -1,4 +1,4 @@
-"""Train Task 2 five-attribute segmentation with dynamic Focal Tversky weights."""
+"""Train Task 2 five-attribute segmentation with fixed per-attribute losses."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 
 from config import load_task2_settings
 from data_preprocessing import TASK2_ATTRIBUTES
-from models import Task2ResNet34MultiDecoder, Task2SegFormerB1MultiDecoder
+from models import Task2ResNet34MultiDecoder, Task2ResNet50MultiDecoder, Task2SegFormerB1MultiDecoder
 from task2_data import (
     OneVariantPerSourceSampler, Task2SegmentationDataset, build_task2_samples,
     restore_logits_to_canvas,
@@ -26,51 +26,6 @@ from training_common import (
     SegmentationTrainer, build_differential_adamw, keep_frozen_encoder_in_eval,
     resolve_device, set_encoder_trainable, set_random_seed,
 )
-
-
-class DynamicAttributeWeights:
-    """Reduce a stagnant attribute's weight, then restore it on improvement."""
-
-    def __init__(self, settings, initial_weights: np.ndarray) -> None:
-        self.settings = settings
-        if initial_weights.shape != (len(TASK2_ATTRIBUTES),) or np.any(initial_weights < 0) or not np.any(initial_weights > 0):
-            raise ValueError("Task 2 attribute loss weights must be non-negative, with at least one active channel.")
-        self.weights = initial_weights.astype(np.float64, copy=True)
-        self.weights /= self.weights.mean()
-        self.base_weights = self.weights.copy()
-        self.best_dice = np.full(len(TASK2_ATTRIBUTES), -np.inf, dtype=np.float64)
-        self.stagnation = np.zeros(len(TASK2_ATTRIBUTES), dtype=np.int64)
-
-    def update(self, dice_values: np.ndarray) -> None:
-        for index, dice in enumerate(dice_values):
-            if dice > self.best_dice[index] + self.settings.min_delta:
-                self.best_dice[index] = dice
-                self.stagnation[index] = 0
-                # Recovery never exceeds the configured per-attribute baseline.
-                self.weights[index] = min(self.base_weights[index], self.weights[index] * self.settings.recovery_factor)
-            else:
-                self.stagnation[index] += 1
-                if self.stagnation[index] >= self.settings.patience:
-                    minimum = self.base_weights[index] * self.settings.minimum_factor
-                    self.weights[index] = max(minimum, self.weights[index] * self.settings.decrease_factor)
-                    self.stagnation[index] = 0
-        self.weights /= self.weights.mean()
-
-    def state_dict(self) -> dict[str, list[float] | list[int]]:
-        return {"weights": self.weights.tolist(), "best_dice": self.best_dice.tolist(), "stagnation": self.stagnation.tolist()}
-
-    def load_state_dict(self, state: object) -> None:
-        if not isinstance(state, dict):
-            return
-        try:
-            weights = np.asarray(state["weights"], dtype=np.float64)
-            best_dice = np.asarray(state["best_dice"], dtype=np.float64)
-            stagnation = np.asarray(state["stagnation"], dtype=np.int64)
-        except (KeyError, TypeError, ValueError):
-            return
-        expected = len(TASK2_ATTRIBUTES)
-        if weights.shape == best_dice.shape == stagnation.shape == (expected,) and np.all(weights >= 0) and np.any(weights > 0):
-            self.weights, self.best_dice, self.stagnation = weights, best_dice, stagnation
 
 
 def focal_tversky_per_attribute(
@@ -126,19 +81,22 @@ class Task2Trainer(SegmentationTrainer):
         self.settings = settings
         self.device = resolve_device(settings.device)
         profiles = [settings.attribute_loss.get(attribute, {}) for attribute in TASK2_ATTRIBUTES]
-        self.base_weights = np.asarray([profile.get("weight", 1.0) for profile in profiles], dtype=np.float64)
+        self.attribute_weights = np.asarray([profile.get("weight", 1.0) for profile in profiles], dtype=np.float64)
         self.alpha = np.asarray([profile.get("alpha", settings.alpha) for profile in profiles], dtype=np.float64)
         self.beta = np.asarray([profile.get("beta", settings.beta) for profile in profiles], dtype=np.float64)
         self.gamma = np.asarray([profile.get("gamma", settings.gamma) for profile in profiles], dtype=np.float64)
+        if np.any(self.attribute_weights < 0) or not np.any(self.attribute_weights > 0):
+            raise ValueError("Task 2 attribute loss weights must be non-negative, with at least one active channel.")
         if np.any(self.alpha < 0) or np.any(self.beta < 0) or np.any(self.gamma <= 0):
             raise ValueError("Each Task 2 attribute requires alpha/beta >= 0 and gamma > 0.")
-        self.dynamic_weights = DynamicAttributeWeights(settings, self.base_weights)
 
     def build_model(self) -> nn.Module:
         if self.settings.model_name in ("task2_resnet34_multidecoder", "task2_resnet34_multidecoder_roi"):
-            return Task2ResNet34MultiDecoder(pretrained=False)
+            return Task2ResNet34MultiDecoder(pretrained=self.settings.encoder_initialization == "imagenet")
+        if self.settings.model_name in ("task2_resnet50_multidecoder", "task2_resnet50_multidecoder_roi"):
+            return Task2ResNet50MultiDecoder(pretrained=self.settings.encoder_initialization == "imagenet")
         if self.settings.model_name in ("task2_segformer_b1_multidecoder", "task2_segformer_b1_multidecoder_roi"):
-            return Task2SegFormerB1MultiDecoder(pretrained=False)
+            return Task2SegFormerB1MultiDecoder(pretrained=self.settings.encoder_initialization == "imagenet")
         raise ValueError(f"Unsupported Task 2 model: {self.settings.model_name}")
 
     def build_loaders(self) -> tuple[DataLoader, DataLoader, int, int]:
@@ -172,7 +130,7 @@ class Task2Trainer(SegmentationTrainer):
         focal_losses = focal_tversky_per_attribute(logits, targets, self.alpha, self.beta, self.gamma, self.settings.epsilon)
         bce_losses = bce_per_attribute(logits, targets)
         losses = self.settings.focal_tversky_weight * focal_losses + self.settings.bce_weight * bce_losses
-        weights = torch.as_tensor(self.dynamic_weights.weights, dtype=logits.dtype, device=logits.device)
+        weights = torch.as_tensor(self.attribute_weights, dtype=logits.dtype, device=logits.device)
         return (losses * weights).sum() / weights.sum()
 
     def compute_metrics(self, logits: Tensor, targets: Tensor) -> dict[str, float]:
@@ -190,16 +148,12 @@ class Task2Trainer(SegmentationTrainer):
                 "margin_ratio": self.settings.roi_margin_ratio,
                 "minimum_box_side": self.settings.roi_minimum_box_side,
             },
-            "task1_checkpoint": str(self.settings.task1_checkpoint),
+            "task1_checkpoint": str(self.settings.task1_checkpoint) if self.settings.task1_checkpoint is not None else None,
             "loss": {
                 "bce_weight": self.settings.bce_weight,
                 "focal_tversky_weight": self.settings.focal_tversky_weight,
                 "epsilon": self.settings.epsilon,
                 "attribute_loss": self.settings.attribute_loss,
-            },
-            "dynamic_weighting": {
-                key: getattr(self.settings, key)
-                for key in ("min_delta", "patience", "decrease_factor", "minimum_factor", "recovery_factor")
             },
         }
 
@@ -238,7 +192,7 @@ class Task2Trainer(SegmentationTrainer):
                     focal_losses = focal_tversky_per_attribute(logits, targets, self.alpha, self.beta, self.gamma, self.settings.epsilon)
                     bce_losses = bce_per_attribute(logits, targets)
                     per_attribute_loss = self.settings.focal_tversky_weight * focal_losses + self.settings.bce_weight * bce_losses
-                    weights = torch.as_tensor(self.dynamic_weights.weights, dtype=logits.dtype, device=self.device)
+                    weights = torch.as_tensor(self.attribute_weights, dtype=logits.dtype, device=self.device)
                     loss = (per_attribute_loss * weights).sum() / weights.sum()
                 if training:
                     optimizer.zero_grad(set_to_none=True)
@@ -272,13 +226,12 @@ class Task2Trainer(SegmentationTrainer):
             metrics[f"dice_{attribute}"] = float(dice[index])
             metrics[f"precision_{attribute}"] = float(precision[index])
             metrics[f"recall_{attribute}"] = float(recall[index])
-            metrics[f"weight_{attribute}"] = float(self.dynamic_weights.weights[index])
         return metrics
 
     def empty_history(self) -> dict[str, list[float]]:
         history = {"epoch": [], "train_total_loss": [], "val_total_loss": [], "train_mean_dice": [], "val_mean_dice": []}
         for attribute in TASK2_ATTRIBUTES:
-            for prefix in ("train_loss", "val_loss", "train_dice", "val_dice", "train_precision", "val_precision", "train_recall", "val_recall", "weight"):
+            for prefix in ("train_loss", "val_loss", "train_dice", "val_dice", "train_precision", "val_precision", "train_recall", "val_recall"):
                 history[f"{prefix}_{attribute}"] = []
         return history
 
@@ -290,7 +243,10 @@ class Task2Trainer(SegmentationTrainer):
 
     def restore(self, model: nn.Module, optimizer: AdamW) -> tuple[int, float, dict[str, list[float]]]:
         if not self.settings.checkpoint_path.is_file():
-            model.load_task1_encoder(self.settings.task1_checkpoint)
+            if self.settings.encoder_initialization == "task1":
+                model.load_task1_encoder(self.settings.task1_checkpoint)
+            else:
+                print("Initialising the Task 2 encoder from ImageNet weights; no Task 1 checkpoint is loaded.")
             return 1, -1.0, self.empty_history()
         checkpoint = torch.load(self.settings.checkpoint_path, map_location="cpu", weights_only=False)
         if checkpoint.get("model_name") != self.settings.model_name:
@@ -301,11 +257,8 @@ class Task2Trainer(SegmentationTrainer):
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             except ValueError as exc:
                 print(f"Checkpoint optimiser layout differs; using a fresh optimiser ({exc}).")
-        metadata = self.checkpoint_metadata()
-        if checkpoint.get("loss") == metadata["loss"] and checkpoint.get("dynamic_weighting") == metadata["dynamic_weighting"]:
-            self.dynamic_weights.load_state_dict(checkpoint.get("dynamic_weights"))
-        else:
-            print("Task 2 loss or dynamic-weight settings changed; using new settings.json attribute weights.")
+        if checkpoint.get("loss") != self.checkpoint_metadata()["loss"]:
+            print("Task 2 loss settings changed; using the current fixed attribute weights from settings.json.")
         saved_history = checkpoint.get("history")
         history = self.empty_history()
         if isinstance(saved_history, dict) and isinstance(saved_history.get("epoch"), list):
@@ -336,7 +289,6 @@ class Task2Trainer(SegmentationTrainer):
             "validation_mean_dice": validation_metrics["mean_dice"],
             "validation_total_loss": validation_metrics["total_loss"],
             "history": history,
-            "dynamic_weights": self.dynamic_weights.state_dict(),
         }
 
     def train(self) -> None:
@@ -366,8 +318,6 @@ class Task2Trainer(SegmentationTrainer):
                     history[f"{phase}_dice_{attribute}"].append(metrics[f"dice_{attribute}"])
                     history[f"{phase}_precision_{attribute}"].append(metrics[f"precision_{attribute}"])
                     history[f"{phase}_recall_{attribute}"].append(metrics[f"recall_{attribute}"])
-            for attribute in TASK2_ATTRIBUTES:
-                history[f"weight_{attribute}"].append(train_metrics[f"weight_{attribute}"])
             print(f"Epoch {epoch:03d}: train loss={train_metrics['total_loss']:.4f}, Dice={train_metrics['mean_dice']:.4f}; val loss={val_metrics['total_loss']:.4f}, Dice={val_metrics['mean_dice']:.4f}")
             for phase, metrics in (("Train", train_metrics), ("Val", val_metrics)):
                 summary = " | ".join(
@@ -375,9 +325,6 @@ class Task2Trainer(SegmentationTrainer):
                     for attribute in TASK2_ATTRIBUTES
                 )
                 print(f"  {phase} precision/recall — {summary}")
-            # Validation determines the weights to be used by the *next*
-            # epoch; persist that state with any checkpoint saved this epoch.
-            self.dynamic_weights.update(np.asarray([val_metrics[f"dice_{name}"] for name in TASK2_ATTRIBUTES]))
             if val_metrics["mean_dice"] > best_dice:
                 best_dice = val_metrics["mean_dice"]
                 torch.save(self.checkpoint_payload(model, optimizer, epoch, val_metrics, history), self.settings.checkpoint_path)

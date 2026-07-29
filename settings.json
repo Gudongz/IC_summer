@@ -1,5 +1,5 @@
 {
-  "model_name": "segformer_b1",
+  "model_name": "uctransnet",
   "models": {
     "unet": {
       "batch_size": 32,
@@ -36,7 +36,7 @@
       "pretrained": true
     },
     "uctransnet": {
-      "batch_size": 64,
+      "batch_size": 16,
       "learning_rate": 0.0003,
       "checkpoint_path": "checkpoints/uctransnet/task1_uctransnet.pt"
     }
@@ -88,7 +88,7 @@
     "output_root": "outputs/task1/evaluation"
   },
   "task2": {
-    "model_name": "task2_segformer_b1_multidecoder_roi",
+    "model_name": "task2_resnet50_multidecoder",
     "models": {
       "task2_resnet34_multidecoder": {
         "roi_enabled": false,
@@ -98,6 +98,15 @@
         "freeze_encoder_epochs": 5,
         "task1_checkpoint": "checkpoints/resnet34_unet/task1_resnet34_unet.pt",
         "checkpoint_path": "checkpoints/task2_resnet34_multidecoder/task2_resnet34_multidecoder.pt"
+      },
+      "task2_resnet50_multidecoder": {
+        "roi_enabled": false,
+        "encoder_initialization": "imagenet",
+        "batch_size": 16,
+        "learning_rate": 0.001,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 10,
+        "checkpoint_path": "checkpoints/task2_resnet50_multidecoder/task2_resnet50_multidecoder.pt"
       },
       "task2_segformer_b1_multidecoder": {
         "roi_enabled": false,
@@ -111,11 +120,20 @@
       "task2_resnet34_multidecoder_roi": {
         "roi_enabled": true,
         "batch_size": 64,
-        "learning_rate": 0.001,
+        "learning_rate": 0.0005,
         "encoder_learning_rate": 0.00003,
         "freeze_encoder_epochs": 5,
         "task1_checkpoint": "checkpoints/resnet34_unet/task1_resnet34_unet.pt",
         "checkpoint_path": "checkpoints/task2_resnet34_multidecoder_roi/task2_resnet34_multidecoder_roi.pt"
+      },
+      "task2_resnet50_multidecoder_roi": {
+        "roi_enabled": true,
+        "encoder_initialization": "imagenet",
+        "batch_size": 16,
+        "learning_rate": 0.0005,
+        "encoder_learning_rate": 0.00003,
+        "freeze_encoder_epochs": 10,
+        "checkpoint_path": "checkpoints/task2_resnet50_multidecoder_roi/task2_resnet50_multidecoder_roi.pt"
       },
       "task2_segformer_b1_multidecoder_roi": {
         "roi_enabled": true,
@@ -147,11 +165,11 @@
       "device": "cuda",
       "prediction_threshold": 0.5,
       "roi_margin_ratio": 0.10,
-      "roi_minimum_box_side": 16,
+      "roi_minimum_box_side": 32,
       "variant_sampling": "one_per_source"
     },
     "loss": {
-      "bce_weight": 1.0,
+      "bce_weight": 0.5,
       "focal_tversky_weight": 1.0,
       "alpha": 0.7,
       "beta": 0.3,
@@ -183,19 +201,21 @@
           "gamma": 1.33
         },
         "globules": {
-          "weight": 1.0,
+          "weight": 0,
           "alpha": 0.7,
           "beta": 0.3,
           "gamma": 1.33
         }
       }
     },
-    "dynamic_weights": {
-      "min_delta": 0.002,
-      "patience": 5,
-      "decrease_factor": 1,
-      "minimum_factor": 0.50,
-      "recovery_factor": 1
+    "decoder_pretraining": {
+      "epochs_per_attribute": 75,
+      "dynamic_sampling": true,
+      "positive_ratio_start": 0.95,
+      "positive_ratio_end": 0.80,
+      "ratio_decay_epochs": 30,
+      "checkpoint_root": "checkpoints/task2_decoder_pretraining",
+      "output_root": "outputs/task2/decoder_pretraining"
     },
     "output": {
       "training_root": "outputs/task2/training"

@@ -55,6 +55,18 @@ def manifest_weights(manifest_path: Path) -> dict[str, float]:
         return {row["image_id"]: float(row.get("sample_weight") or 1.0) for row in csv.DictReader(file)}
 
 
+def manifest_attribute_presence(manifest_path: Path, attribute: str) -> dict[str, bool]:
+    """Read source-level Task 2 attribute presence labels from a split manifest."""
+    column = f"{attribute}_present"
+    with manifest_path.open(newline="", encoding="utf-8-sig") as file:
+        rows = list(csv.DictReader(file))
+    if not rows or column not in rows[0]:
+        raise ValueError(
+            f"{manifest_path} must contain {column!r}; regenerate the split with data_preprocessing_v2.py."
+        )
+    return {row["image_id"]: bool(int(row.get(column) or 0)) for row in rows}
+
+
 def full_canvas_roi(height: int, width: int) -> ROITransform:
     return ROITransform(0, 0, width, height, height, width)
 
@@ -156,6 +168,62 @@ class OneVariantPerSourceSampler(Sampler[int]):
         selected = [rng.choice(indices) for _, indices in sorted(self.indices_by_source.items())]
         rng.shuffle(selected)
         return iter(selected)
+
+    def __len__(self) -> int:
+        return len(self.indices_by_source)
+
+
+class AttributeCurriculumSampler(Sampler[int]):
+    """Sample one fixed variant per selected source with a scheduled positive ratio."""
+
+    def __init__(
+        self,
+        samples: list[Task2Sample],
+        source_presence: dict[str, bool],
+        seed: int,
+        positive_ratio_start: float,
+        positive_ratio_end: float,
+        ratio_decay_epochs: int,
+    ) -> None:
+        if not 0 < positive_ratio_start < 1 or not 0 < positive_ratio_end < 1:
+            raise ValueError("Attribute curriculum positive ratios must be strictly between 0 and 1.")
+        if ratio_decay_epochs < 1:
+            raise ValueError("Attribute curriculum ratio_decay_epochs must be positive.")
+        self.seed = seed
+        self.epoch = 1
+        self.positive_ratio_start = positive_ratio_start
+        self.positive_ratio_end = positive_ratio_end
+        self.ratio_decay_epochs = ratio_decay_epochs
+        self.indices_by_source: dict[str, list[int]] = {}
+        for index, sample in enumerate(samples):
+            self.indices_by_source.setdefault(sample.source_image_id, []).append(index)
+        missing = sorted(set(self.indices_by_source) - set(source_presence))
+        if missing:
+            raise ValueError(f"Attribute manifest lacks {len(missing)} retained source IDs (for example {missing[0]}).")
+        self.positive_sources = [source for source in self.indices_by_source if source_presence[source]]
+        self.negative_sources = [source for source in self.indices_by_source if not source_presence[source]]
+        if not self.positive_sources or not self.negative_sources:
+            raise ValueError("Attribute curriculum requires both positive and negative source images.")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    @property
+    def positive_ratio(self) -> float:
+        progress = min(max(self.epoch - 1, 0) / max(self.ratio_decay_epochs - 1, 1), 1.0)
+        return self.positive_ratio_start + (self.positive_ratio_end - self.positive_ratio_start) * progress
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        total = len(self.indices_by_source)
+        positive_count = round(total * self.positive_ratio)
+        sources = (
+            [rng.choice(self.positive_sources) for _ in range(positive_count)]
+            + [rng.choice(self.negative_sources) for _ in range(total - positive_count)]
+        )
+        indices = [rng.choice(self.indices_by_source[source]) for source in sources]
+        rng.shuffle(indices)
+        return iter(indices)
 
     def __len__(self) -> int:
         return len(self.indices_by_source)

@@ -87,23 +87,38 @@ def load_task2_settings() -> SimpleNamespace:
         available = ", ".join(task2.get("models", {}))
         raise ValueError(f"Unknown Task 2 model {model_name!r}. Available models: {available}") from exc
     values = {
-        **task2["data"], **task2["training"], **task2["loss"], **task2["dynamic_weights"], **task2["output"],
+        **task2["data"], **task2["training"], **task2["loss"], **task2["output"],
         "model_name": model_name,
         "batch_size": profile["batch_size"],
         "learning_rate": profile["learning_rate"],
         "encoder_learning_rate": profile["encoder_learning_rate"],
         "freeze_encoder_epochs": profile["freeze_encoder_epochs"],
+        "encoder_initialization": profile.get("encoder_initialization", "task1"),
         "roi_enabled": bool(profile.get("roi_enabled", False)),
-        "task1_checkpoint": profile["task1_checkpoint"],
+        "task1_checkpoint": profile.get("task1_checkpoint"),
         "checkpoint_path": profile["checkpoint_path"],
     }
-    for key in ("train_input", "train_gt", "train_lesion_prior", "train_roi_mask", "val_input", "val_gt", "val_lesion_prior", "val_roi_mask", "train_manifest", "task1_checkpoint", "checkpoint_path", "training_root"):
+    if values["encoder_initialization"] == "task1" and values["task1_checkpoint"] is None:
+        raise ValueError("Task 2 profiles with encoder_initialization='task1' require task1_checkpoint.")
+    for key in ("train_input", "train_gt", "train_lesion_prior", "train_roi_mask", "val_input", "val_gt", "val_lesion_prior", "val_roi_mask", "train_manifest", "checkpoint_path", "training_root"):
         values[key] = _project_path(values[key])
+    if values["task1_checkpoint"] is not None:
+        values["task1_checkpoint"] = _project_path(values["task1_checkpoint"])
     values["training_plot_path"] = values["training_root"] / model_name / "curves.png"
     attribute_loss = values.get("attribute_loss", {})
     if not isinstance(attribute_loss, dict):
         raise ValueError("task2.loss.attribute_loss must be an object keyed by attribute name.")
     values["attribute_loss"] = attribute_loss
+    if values["encoder_initialization"] not in ("task1", "imagenet"):
+        raise ValueError("task2 model encoder_initialization must be 'task1' or 'imagenet'.")
+    decoder_pretraining = task2.get("decoder_pretraining", {})
+    if not isinstance(decoder_pretraining, dict):
+        raise ValueError("task2.decoder_pretraining must be an object.")
+    values["decoder_pretraining"] = {
+        **decoder_pretraining,
+        "checkpoint_root": _project_path(decoder_pretraining.get("checkpoint_root", "checkpoints/task2_decoder_pretraining")),
+        "output_root": _project_path(decoder_pretraining.get("output_root", "outputs/task2/decoder_pretraining")),
+    }
     return SimpleNamespace(**values)
 
 

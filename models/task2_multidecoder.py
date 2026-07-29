@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import torch
 from torch import Tensor, nn
@@ -92,7 +93,7 @@ class Task2ResNet34MultiDecoder(nn.Module):
         self.encoder.load_state_dict(encoder_state, strict=True)
         self.normalize_input = bool(checkpoint.get("pretrained", checkpoint.get("pretrained_encoder", False)))
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, attribute_indices: Sequence[int] | None = None) -> Tensor:
         input_size = x.shape[-2:]
         if self.normalize_input:
             x = (x - self.input_mean) / self.input_std
@@ -101,7 +102,95 @@ class Task2ResNet34MultiDecoder(nn.Module):
         layer2 = self.encoder["layer2"](layer1)
         layer3 = self.encoder["layer3"](layer2)
         layer4 = self.encoder["layer4"](layer3)
-        return torch.cat([decoder(stem, layer1, layer2, layer3, layer4, input_size) for decoder in self.attribute_decoders], dim=1)
+        indices = range(self.num_attributes) if attribute_indices is None else tuple(attribute_indices)
+        if not indices or any(index < 0 or index >= self.num_attributes for index in indices):
+            raise ValueError("attribute_indices must contain valid Task 2 decoder indices.")
+        return torch.cat(
+            [self.attribute_decoders[index](stem, layer1, layer2, layer3, layer4, input_size) for index in indices], dim=1
+        )
+
+
+class ResNet50AttributeDecoder(nn.Module):
+    """A complete independent U-Net decoder matched to ResNet50 feature widths."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dec4 = ResNetUpBlock(2048, 1024, 512)
+        self.dec3 = ResNetUpBlock(512, 512, 256)
+        self.dec2 = ResNetUpBlock(256, 256, 128)
+        self.dec1 = ResNetUpBlock(128, 64, 64)
+        self.final_up = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.final_refine = ConvRefine(32, 32)
+        self.head = nn.Conv2d(32, 1, kernel_size=1)
+
+    def forward(
+        self,
+        stem: Tensor,
+        layer1: Tensor,
+        layer2: Tensor,
+        layer3: Tensor,
+        layer4: Tensor,
+        input_size: tuple[int, int],
+    ) -> Tensor:
+        x = self.dec4(layer4, layer3)
+        x = self.dec3(x, layer2)
+        x = self.dec2(x, layer1)
+        x = self.dec1(x, stem)
+        x = self.final_refine(self.final_up(x))
+        return F.interpolate(self.head(x), size=input_size, mode="bilinear", align_corners=False)
+
+
+class Task2ResNet50MultiDecoder(nn.Module):
+    """Shared ImageNet/Task-1 ResNet50 encoder with five full U-Net decoders."""
+
+    task1_model_name = "resnet50_unet"
+
+    def __init__(self, pretrained: bool = True, num_attributes: int = 5) -> None:
+        super().__init__()
+        if num_attributes <= 0:
+            raise ValueError("num_attributes must be positive")
+        try:
+            from torchvision.models import ResNet50_Weights, resnet50
+        except ModuleNotFoundError as exc:
+            raise ImportError("Task2ResNet50MultiDecoder requires torchvision.") from exc
+        backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
+        self.normalize_input = pretrained
+        self.num_attributes = num_attributes
+        self.register_buffer("input_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("input_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.encoder = nn.ModuleDict({
+            "stem": nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu),
+            "maxpool": backbone.maxpool, "layer1": backbone.layer1, "layer2": backbone.layer2,
+            "layer3": backbone.layer3, "layer4": backbone.layer4,
+        })
+        self.attribute_decoders = nn.ModuleList(ResNet50AttributeDecoder() for _ in range(num_attributes))
+
+    def load_task1_encoder(self, checkpoint_path: str | Path) -> None:
+        checkpoint = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
+        if checkpoint.get("model_name") != self.task1_model_name:
+            raise ValueError(f"Task2ResNet50MultiDecoder requires a {self.task1_model_name!r} checkpoint.")
+        state = checkpoint.get("model_state_dict")
+        if not isinstance(state, dict):
+            raise ValueError("Task 1 checkpoint has no model_state_dict.")
+        encoder_state = {key.removeprefix("encoder."): value for key, value in state.items() if key.startswith("encoder.")}
+        self.encoder.load_state_dict(encoder_state, strict=True)
+        self.normalize_input = bool(checkpoint.get("pretrained", checkpoint.get("pretrained_encoder", False)))
+
+    def forward(self, x: Tensor, attribute_indices: Sequence[int] | None = None) -> Tensor:
+        input_size = x.shape[-2:]
+        if self.normalize_input:
+            x = (x - self.input_mean) / self.input_std
+        stem = self.encoder["stem"](x)
+        layer1 = self.encoder["layer1"](self.encoder["maxpool"](stem))
+        layer2 = self.encoder["layer2"](layer1)
+        layer3 = self.encoder["layer3"](layer2)
+        layer4 = self.encoder["layer4"](layer3)
+        indices = range(self.num_attributes) if attribute_indices is None else tuple(attribute_indices)
+        if not indices or any(index < 0 or index >= self.num_attributes for index in indices):
+            raise ValueError("attribute_indices must contain valid Task 2 decoder indices.")
+        return torch.cat(
+            [self.attribute_decoders[index](stem, layer1, layer2, layer3, layer4, input_size) for index in indices], dim=1
+        )
 
 
 class SegFormerUpBlock(nn.Module):
@@ -189,10 +278,13 @@ class Task2SegFormerB1MultiDecoder(nn.Module):
         self.encoder.load_state_dict(encoder_state, strict=True)
         self.normalize_input = bool(checkpoint.get("pretrained", checkpoint.get("pretrained_encoder", False)))
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, attribute_indices: Sequence[int] | None = None) -> Tensor:
         input_size = x.shape[-2:]
         if self.normalize_input:
             x = (x - self.input_mean) / self.input_std
         outputs = self.encoder(pixel_values=x, output_hidden_states=True, return_dict=True)
         features = tuple(outputs.hidden_states)
-        return torch.cat([decoder(features, input_size) for decoder in self.attribute_decoders], dim=1)
+        indices = range(self.num_attributes) if attribute_indices is None else tuple(attribute_indices)
+        if not indices or any(index < 0 or index >= self.num_attributes for index in indices):
+            raise ValueError("attribute_indices must contain valid Task 2 decoder indices.")
+        return torch.cat([self.attribute_decoders[index](features, input_size) for index in indices], dim=1)

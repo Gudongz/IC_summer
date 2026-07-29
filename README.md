@@ -108,11 +108,15 @@ every fixed variant in each epoch. Validation is unchanged.
 ## Train Task 2 attributes
 
 Task 2's primary experiment is RGB-only with Task 1 prediction-guided ROI
-cropping. Select either `task2_resnet34_multidecoder_roi` or
-`task2_segformer_b1_multidecoder_roi` in
+cropping. Select `task2_resnet34_multidecoder_roi`,
+`task2_resnet50_multidecoder_roi`, or `task2_segformer_b1_multidecoder_roi` in
 `settings.json` under `task2.model_name`. Both models share one encoder
 initialized from the matching Task 1 checkpoint, then use five complete,
 parameter-independent decoders (one per attribute).
+
+The ResNet50 profiles are an intentional exception: their
+`encoder_initialization` is `imagenet`, so they use torchvision's initial
+ImageNet ResNet50 weights and do not read a Task 1 checkpoint.
 
 Then train:
 
@@ -136,9 +140,8 @@ python prepare_task2_priors.py --model segformer_b1 --split both
 The selected Task 2 profile transfers only the matching Task 1 encoder. It
 accepts an RGB image and outputs five independent attribute logits (each is
 passed through sigmoid independently). Each active attribute uses equal-coefficient BCE and
-Focal Tversky loss; `task2.loss.attribute_loss` sets its initial weight and its
-own Tversky parameters. The dynamic policy reduces a stagnant attribute's loss
-weight, then restores it when validation Dice improves.
+Focal Tversky loss; `task2.loss.attribute_loss` sets its fixed loss weight and
+its own Tversky parameters. The configured loss weights remain unchanged throughout training.
 
 `task2.training.variant_sampling` controls fixed augmentation sampling:
 
@@ -158,6 +161,44 @@ training remain independent.
 The non-ROI profiles remain available as an RGB-only full-image comparison.
 A future RGB+mask four-channel model should use a separate profile, because the
 extra channel changes the pretrained encoder input distribution.
+
+### Stage 1: pretrain one attribute decoder
+
+`train_task2_decoder_pretraining.py` freezes the shared Task 1-initialized
+encoder and all non-target decoders. It trains only the requested full decoder,
+with optional source-level positive sampling; BCE is computed on all sampled
+ROIs and Focal Tversky only on positive ROIs. Run the five stages sequentially
+so each completed decoder is carried into the shared stage state:
+
+```powershell
+python train_task2_decoder_pretraining.py --attribute pigment_network
+python train_task2_decoder_pretraining.py --attribute negative_network
+python train_task2_decoder_pretraining.py --attribute streaks
+python train_task2_decoder_pretraining.py --attribute milia_like_cyst
+python train_task2_decoder_pretraining.py --attribute globules
+```
+
+The selected ROI source remains the configured `train_roi_mask` / `val_roi_mask`.
+The current settings use Task 1 GT ROI masks for this upper-bound experiment;
+switch both paths to Task 1 prediction-mask folders before evaluating a deployable
+two-stage pipeline.
+
+`task2.decoder_pretraining.dynamic_sampling` controls the positive-sampling
+schedule. Set it to `true` to use the configured
+`positive_ratio_start` → `positive_ratio_end` schedule; set it to `false` to
+use the natural source-level class distribution while still selecting one random
+fixed augmentation per source each epoch.
+
+Each Stage-1 run writes `history.json` and refreshes `curves.png` after every
+epoch under `outputs/task2/decoder_pretraining/<model>/<attribute>/`. The report
+contains train/validation loss, Dice, Precision/Recall curves, and the current
+validation 2×2 confusion matrix (with Precision and Recall in its title).
+
+`decoder_pretraining.epochs_per_attribute` is the total target epoch count for
+each decoder. To extend an already trained decoder, increase this value in
+`settings.json` and run the same attribute command again; the script resumes
+from the validation-best `<attribute>.pt`. The `<attribute>_latest.pt` file is
+saved for audit only and is not used as a training starting point.
 
 ## Inference and evaluation
 
